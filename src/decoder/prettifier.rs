@@ -46,56 +46,61 @@ pub fn prettify_with_report(
     let colours = palette();
     let mut output = String::new();
     let fields = parse_fix(msg);
-    let mut tag_map: std::collections::HashMap<u32, Vec<&_>> = std::collections::HashMap::new();
-    for field in &fields {
-        tag_map.entry(field.tag).or_default().push(field);
-    }
-
     let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
     let message_def: Option<MessageDef> = msg_type
         .as_deref()
         .and_then(|mt| dict.message_def(mt).cloned());
 
-    let ordered_tags: Vec<u32> = message_def
-        .as_ref()
-        .map(|def| def.field_order.clone())
-        .unwrap_or_else(|| fields.iter().map(|f| f.tag).collect());
+    use std::collections::VecDeque;
+    let mut tag_buckets: std::collections::HashMap<u32, VecDeque<&_>> =
+        std::collections::HashMap::new();
+    for field in &fields {
+        tag_buckets.entry(field.tag).or_default().push_back(field);
+    }
+
+    let mut ordered_tags: Vec<u32> = match message_def.as_ref() {
+        Some(def) => def.field_order.clone(),
+        None => {
+            // Best-effort ordering when MsgType is missing: emit header tags in canonical order first, then existing fields.
+            let mut base = vec![8, 9, 35];
+            for f in &fields {
+                if !base.contains(&f.tag) {
+                    base.push(f.tag);
+                }
+            }
+            base
+        }
+    };
 
     let annotations = report.map(|r| &r.tag_errors);
 
+    if let Some(ann) = annotations {
+        let mut missing: Vec<u32> = ann
+            .keys()
+            .filter(|tag| !ordered_tags.contains(tag))
+            .copied()
+            .collect();
+        missing.sort();
+        ordered_tags.extend(missing);
+    }
+
     for tag in ordered_tags {
-        if let Some(values) = tag_map.remove(&tag) {
-            for field in values {
+        if let Some(bucket) = tag_buckets.get_mut(&tag) {
+            while let Some(field) = bucket.pop_front() {
                 write_field_line(&mut output, dict, field, annotations, &colours);
             }
-        } else if let Some(_errors) = annotations
+        } else if let Some(errs) = annotations
             .and_then(|ann| ann.get(&tag))
             .filter(|errs| !errs.is_empty())
         {
-            let name = dict.field_name(tag);
-            let err_text = "Missing";
-            output.push_str(&format!(
-                "    {}{:4}{} ({}{}{}): {}{}{}\n",
-                colours.error,
-                tag,
-                colours.reset,
-                colours.name,
-                name,
-                colours.reset,
-                colours.error,
-                err_text,
-                colours.reset
-            ));
+            write_missing_line(&mut output, dict, tag, errs, &colours);
         }
     }
 
-    // Any tags not in the expected order (e.g., unknown/extra) are appended in original order.
-    for field in &fields {
-        if let Some(values) = tag_map.get_mut(&field.tag)
-            && !values.is_empty()
-        {
-            let f = values.remove(0);
-            write_field_line(&mut output, dict, f, annotations, &colours);
+    // Emit any remaining fields that were not covered by ordered_tags.
+    for bucket in tag_buckets.values_mut() {
+        while let Some(field) = bucket.pop_front() {
+            write_field_line(&mut output, dict, field, annotations, &colours);
         }
     }
 
@@ -172,6 +177,33 @@ fn write_field_line(
     }
 
     output.push('\n');
+}
+
+fn write_missing_line(
+    output: &mut String,
+    dict: &FixTagLookup,
+    tag: u32,
+    errors: &[String],
+    colours: &crate::decoder::colours::ColourPalette,
+) {
+    let name = dict.field_name(tag);
+    let err_text = if errors.is_empty() {
+        "Missing".to_string()
+    } else {
+        errors.join(", ")
+    };
+    output.push_str(&format!(
+        "    {}{:4}{} ({}{}{}): {}{}{}\n",
+        colours.error,
+        tag,
+        colours.reset,
+        colours.name,
+        name,
+        colours.reset,
+        colours.error,
+        err_text,
+        colours.reset
+    ));
 }
 
 fn handle_stdin(
@@ -430,11 +462,15 @@ mod tests {
     use crate::fix;
     use std::collections::HashMap;
     use std::io::Cursor;
+    use std::sync::Mutex;
 
     const SOH: char = '\u{0001}';
+    static TEST_GUARD: once_cell::sync::Lazy<Mutex<()>> =
+        once_cell::sync::Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn validation_only_outputs_invalid_messages() {
+        let _lock = TEST_GUARD.lock().unwrap();
         set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let body = format!("35=0{SOH}34=1{SOH}49=AAA{SOH}52=20240101-00:00:00{SOH}56=BBB{SOH}");
@@ -470,6 +506,7 @@ mod tests {
 
     #[test]
     fn validation_skips_valid_messages() {
+        let _lock = TEST_GUARD.lock().unwrap();
         set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let lookup = load_dictionary(&format!("8=FIX.4.4{SOH}35=0{SOH}10=000{SOH}"));
@@ -486,8 +523,7 @@ mod tests {
         values.insert(56u32, "BBB");
 
         let body = build_body_from_order(&order, &values);
-        let msg_without_checksum =
-            format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body.len(), body);
+        let msg_without_checksum = format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body.len(), body);
         let checksum = validator::calculate_checksum(&format!("{msg_without_checksum}10=000{SOH}"));
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
         let dict = load_dictionary(&msg);
@@ -512,6 +548,31 @@ mod tests {
         assert!(
             output.trim().is_empty(),
             "valid messages should not produce output in validation mode"
+        );
+    }
+
+    #[test]
+    fn validation_inserts_missing_tags() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+        set_validation(true);
+        let obfuscator = fix::create_obfuscator(false);
+        let msg = format!("8=FIX.4.4{SOH}9=005{SOH}10=999{SOH}");
+        let line = format!("{msg}\n");
+        let mut out = Vec::new();
+        stream_reader(
+            BufReader::new(Cursor::new(line)),
+            &mut out,
+            &obfuscator,
+            '|',
+        )
+        .unwrap();
+        set_validation(false);
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("35 (MsgType): Missing"),
+            "missing tag should be shown in decoded output: {output}"
         );
     }
 

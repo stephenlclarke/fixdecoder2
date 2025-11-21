@@ -34,29 +34,28 @@ pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> ValidationReport 
         tag_errors.entry(dup).or_default().push(err);
     }
 
-    let (msg_type_errs, msg_def_opt) = validate_msg_type(&field_map, dict);
+    let (msg_type_errs, msg_def_opt) = validate_msg_type(&field_map, dict, &mut tag_errors);
     errors.extend(msg_type_errs);
-    let Some(msg_def) = msg_def_opt else {
-        return ValidationReport { errors, tag_errors };
-    };
-
-    errors.extend(validate_required_fields(
-        &msg_def.required,
-        &seen_tags,
-        dict,
-        &mut tag_errors,
-    ));
     errors.extend(validate_body_length(msg, &field_map, &mut tag_errors));
     errors.extend(validate_field_enums_and_types(
         &fields,
         dict,
         &mut tag_errors,
     ));
-    errors.extend(validate_field_ordering(
-        &fields,
-        &msg_def.field_order,
-        &mut tag_errors,
-    ));
+
+    if let Some(msg_def) = msg_def_opt {
+        errors.extend(validate_required_fields(
+            &msg_def.required,
+            &seen_tags,
+            dict,
+            &mut tag_errors,
+        ));
+        errors.extend(validate_field_ordering(
+            &fields,
+            &msg_def.field_order,
+            &mut tag_errors,
+        ));
+    }
     errors.extend(validate_checksum_field(msg, &field_map, &mut tag_errors));
 
     ValidationReport { errors, tag_errors }
@@ -81,12 +80,21 @@ fn build_field_map(
 fn validate_msg_type<'a>(
     field_map: &HashMap<u32, String>,
     dict: &'a FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
 ) -> (Vec<String>, Option<&'a MessageDef>) {
     match field_map.get(&35) {
-        None => (vec!["Missing required tag 35 (MsgType)".to_string()], None),
+        None => {
+            let err = "Missing required tag 35 (MsgType)".to_string();
+            tag_errors.entry(35).or_default().push(err.clone());
+            (vec![err], None)
+        }
         Some(msg_type) => match dict.message_def(msg_type) {
             Some(def) => (Vec::new(), Some(def)),
-            None => (vec![format!("Unknown MsgType: {}", msg_type)], None),
+            None => {
+                let err = format!("Unknown MsgType: {}", msg_type);
+                tag_errors.entry(35).or_default().push(err.clone());
+                (vec![err], None)
+            }
         },
     }
 }
@@ -444,6 +452,31 @@ mod tests {
                 .any(|e| e.contains("Checksum mismatch")),
             "expected checksum mismatch, got {:?}",
             errors.errors
+        );
+    }
+
+    #[test]
+    fn missing_msg_type_still_reports_length_and_tag() {
+        let dict = test_lookup();
+        let msg = format!("8=FIX.4.4{SOH}9=005{SOH}10=999{SOH}");
+        let report = validate_fix_message(&msg, &dict);
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("Missing required tag 35")),
+            "expected missing MsgType error"
+        );
+        assert!(
+            report
+                .errors
+                .iter()
+                .any(|e| e.contains("BodyLength mismatch") || e.contains("Checksum mismatch")),
+            "expected invariant checks to run even without MsgType"
+        );
+        assert!(
+            report.tag_errors.contains_key(&35),
+            "tag error map should include tag 35 when missing"
         );
     }
 }
