@@ -1,0 +1,985 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// SPDX-FileCopyrightText: 2025 Steve Clarke <stephenlclarke@mac.com> - https://xyzzy.tools
+
+//! Presentation helpers for dictionary browsing and FIX message output.
+//! Rendering is intentionally opinionated: we optimise for legibility in
+//! consoles, reusing colour palettes and column layouts wherever possible.
+//! The module-level comment keeps the tone informal yet informative.
+
+use crate::decoder::colours::{ColourPalette, palette};
+use crate::decoder::schema::{
+    ComponentNode, Field, FieldNode, GroupNode, MessageNode, SchemaTree, Value,
+};
+use std::cmp;
+use std::collections::HashMap;
+use std::fmt;
+use std::io::{self, Write};
+use terminal_size::{Width, terminal_size};
+
+/// Captures how many columns we can render enums in and how wide each column
+/// needs to be for tidy terminal output.
+#[derive(Clone, Copy)]
+pub(crate) struct ColumnLayout {
+    column_width: usize,
+    columns: usize,
+    max_indent: usize,
+}
+
+/// Colour + layout preferences passed around the render stack.  Allows the
+/// caller to toggle column mode once and reuse the result everywhere.
+#[derive(Clone, Copy)]
+pub struct DisplayStyle {
+    colours: ColourPalette,
+    columns: bool,
+    layout: Option<ColumnLayout>,
+}
+
+impl DisplayStyle {
+    pub fn new(colours: ColourPalette, columns: bool) -> Self {
+        Self {
+            colours,
+            columns,
+            layout: None,
+        }
+    }
+
+    fn colours(self) -> ColourPalette {
+        self.colours
+    }
+
+    fn columns_enabled(self) -> bool {
+        self.columns
+    }
+
+    fn layout(self) -> Option<ColumnLayout> {
+        self.layout
+    }
+
+    fn with_layout(self, layout: Option<ColumnLayout>) -> Self {
+        Self { layout, ..self }
+    }
+
+    fn ensure_layout<F>(self, compute: F) -> Self
+    where
+        F: FnOnce() -> Option<ColumnLayout>,
+    {
+        if !self.columns || self.layout.is_some() {
+            self
+        } else {
+            self.with_layout(compute())
+        }
+    }
+}
+
+/// Running stats used to find the optimal column width given all fields
+/// in a message/component/group.
+#[derive(Default)]
+struct LayoutStats {
+    max_entry_len: usize,
+    max_indent: usize,
+}
+
+impl LayoutStats {
+    fn record(&mut self, entry_len: usize, indent: usize) {
+        if entry_len == 0 {
+            return;
+        }
+        self.max_entry_len = self.max_entry_len.max(entry_len);
+        self.max_indent = self.max_indent.max(indent);
+    }
+
+    fn finalize(self) -> Option<ColumnLayout> {
+        if self.max_entry_len == 0 {
+            return None;
+        }
+        let column_width = self.max_entry_len + 2;
+        let usable_width = terminal_width().saturating_sub(self.max_indent);
+        let columns = cmp::max(1, usable_width / column_width);
+        Some(ColumnLayout {
+            column_width,
+            columns: columns.max(1),
+            max_indent: self.max_indent,
+        })
+    }
+}
+
+fn terminal_width() -> usize {
+    if let Some((Width(w), _)) = terminal_size() {
+        w as usize
+    } else {
+        80
+    }
+}
+
+/// Tiny helper that implements `Display` for indentation without building
+/// temporary `String`s.
+#[derive(Clone, Copy)]
+struct Indent(usize);
+
+impl fmt::Display for Indent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:width$}", "", width = self.0)
+    }
+}
+
+fn indent(level: usize) -> Indent {
+    Indent(level)
+}
+
+/// Buffer reused when we collate enum/value pairs so we avoid allocating a
+/// new vector for every field.
+type EnumBuffer<'a> = Vec<&'a Value>;
+
+/// Collect values into the shared buffer and sort them for deterministic
+/// column output.  Saves the caller from having to clone per field.
+fn collect_sorted_values<'a, 'b, I>(buf: &'b mut EnumBuffer<'a>, iter: I) -> &'b [&'a Value]
+where
+    I: IntoIterator<Item = &'a Value>,
+{
+    buf.clear();
+    buf.extend(iter);
+    buf.sort_by(|a, b| a.enumeration.cmp(&b.enumeration));
+    buf
+}
+
+fn format_required(required: bool, colours: ColourPalette) -> String {
+    if required {
+        format!(" - ({}Y{})", colours.title, colours.reset)
+    } else {
+        String::new()
+    }
+}
+
+fn print_field(
+    out: &mut dyn Write,
+    field: &FieldNode,
+    indent_level: usize,
+    colours: ColourPalette,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "{}{}{:4}{}: {}{}{} ({}{}{}){}",
+        indent(indent_level),
+        colours.tag,
+        field.field.number,
+        colours.reset,
+        colours.name,
+        field.field.name,
+        colours.reset,
+        colours.value,
+        field.field.field_type,
+        colours.reset,
+        format_required(field.required, colours)
+    )
+}
+
+fn print_enum(
+    out: &mut dyn Write,
+    value: &Value,
+    indent_level: usize,
+    colours: ColourPalette,
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "{}{}{}{} : {}{}{}",
+        indent(indent_level + 4),
+        colours.value,
+        value.enumeration,
+        colours.reset,
+        colours.enumeration,
+        value.description,
+        colours.reset
+    )
+}
+
+fn print_enum_columns(
+    out: &mut dyn Write,
+    values: &[&Value],
+    indent_level: usize,
+    colours: ColourPalette,
+    layout: Option<ColumnLayout>,
+) -> io::Result<()> {
+    if values.is_empty() {
+        return Ok(());
+    }
+
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.enumeration.cmp(&b.enumeration));
+
+    let layout_params = determine_enum_layout(indent_level, layout, &sorted);
+    let rows = sorted.len().div_ceil(layout_params.cols);
+
+    for row in 0..rows {
+        for col in 0..layout_params.cols {
+            let idx = col * rows + row;
+            if idx >= sorted.len() {
+                continue;
+            }
+            write_enum_cell(
+                out,
+                colours,
+                indent_level,
+                sorted[idx],
+                col,
+                layout_params.col_width,
+                layout_params.extra_pad,
+            )?;
+        }
+        writeln!(out)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct EnumLayout {
+    cols: usize,
+    col_width: usize,
+    extra_pad: usize,
+}
+
+fn determine_enum_layout(
+    indent_level: usize,
+    layout: Option<ColumnLayout>,
+    values: &[&Value],
+) -> EnumLayout {
+    if let Some(layout) = layout {
+        return EnumLayout {
+            cols: layout.columns.max(1),
+            col_width: layout.column_width.max(1),
+            extra_pad: layout.max_indent.saturating_sub(indent_level),
+        };
+    }
+
+    let max_len = values
+        .iter()
+        .map(|v| v.enumeration.len() + 2 + v.description.len())
+        .max()
+        .unwrap_or(0);
+    let usable_width = terminal_width().saturating_sub(indent_level);
+    let cols = cmp::max(1, usable_width / (max_len + 2));
+
+    EnumLayout {
+        cols,
+        col_width: max_len + 2,
+        extra_pad: 0,
+    }
+}
+
+fn write_enum_cell(
+    out: &mut dyn Write,
+    colours: ColourPalette,
+    indent_level: usize,
+    value: &Value,
+    col: usize,
+    col_width: usize,
+    extra_pad: usize,
+) -> io::Result<()> {
+    let plain_width = value.enumeration.len() + 2 + value.description.len();
+    let (visible, width) = if col == 0 {
+        let indent_adjust = indent_level + extra_pad;
+        (plain_width + indent_adjust, col_width + indent_adjust)
+    } else {
+        (plain_width, col_width)
+    };
+
+    write_with_padding(out, visible, width, |inner| {
+        if col == 0 {
+            write!(inner, "{}", indent(indent_level))?;
+            if extra_pad > 0 {
+                write!(inner, "{:pad$}", "", pad = extra_pad)?;
+            }
+        }
+        write!(
+            inner,
+            "{}{}{}: {}{}{}",
+            colours.value,
+            value.enumeration,
+            colours.reset,
+            colours.enumeration,
+            value.description,
+            colours.reset
+        )
+    })
+}
+
+#[derive(Clone)]
+struct DisplayCell {
+    text: String,
+    width: usize,
+}
+
+impl DisplayCell {
+    /// Build a cell with precalculated visible width for column rendering.
+    fn new(text: String) -> Self {
+        let width = visible_len(&text);
+        Self { text, width }
+    }
+}
+
+fn message_cell(msg: &MessageNode, colours: ColourPalette) -> DisplayCell {
+    DisplayCell::new(format!(
+        "{}{:>2}{}: {}{}{} ({})",
+        colours.tag,
+        msg.msg_type,
+        colours.reset,
+        colours.name,
+        msg.name,
+        colours.reset,
+        msg.msg_cat
+    ))
+}
+
+fn component_cell(name: &str, colours: ColourPalette) -> DisplayCell {
+    DisplayCell::new(format!("{}{}{}", colours.name, name, colours.reset))
+}
+
+fn tag_cell(
+    number: u32,
+    name: &str,
+    ty: &str,
+    required: bool,
+    colours: ColourPalette,
+) -> DisplayCell {
+    DisplayCell::new(format!(
+        "{}{:4}{}: {}{}{} ({}{}{}){}",
+        colours.tag,
+        number,
+        colours.reset,
+        colours.name,
+        name,
+        colours.reset,
+        colours.value,
+        ty,
+        colours.reset,
+        format_required(required, colours)
+    ))
+}
+
+fn print_string_columns(items: &[DisplayCell]) -> io::Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+
+    let width = terminal_width();
+    let max_len = items.iter().map(|s| s.width).max().unwrap_or(0);
+    let cols = cmp::max(1, width / (max_len + 2));
+    let rows = items.len().div_ceil(cols);
+
+    let mut stdout = io::stdout().lock();
+    for row in 0..rows {
+        for col in 0..cols {
+            let idx = col * rows + row;
+            if idx < items.len() {
+                write_with_padding(&mut stdout, items[idx].width, max_len + 2, |out| {
+                    write!(out, "{}", items[idx].text)
+                })?;
+            }
+        }
+        writeln!(stdout)?;
+    }
+    Ok(())
+}
+
+#[derive(Hash, Eq, PartialEq)]
+enum LayoutKind {
+    Component,
+    Group,
+}
+
+#[derive(Hash, Eq, PartialEq)]
+struct LayoutCacheKey {
+    indent: usize,
+    kind: LayoutKind,
+    name: String,
+}
+
+impl LayoutCacheKey {
+    /// Build a cache key for a component layout at a given indentation level.
+    fn component(name: &str, indent: usize) -> Self {
+        Self {
+            indent,
+            kind: LayoutKind::Component,
+            name: name.to_string(),
+        }
+    }
+
+    /// Build a cache key for a group layout at a given indentation level.
+    fn group(name: &str, indent: usize) -> Self {
+        Self {
+            indent,
+            kind: LayoutKind::Group,
+            name: name.to_string(),
+        }
+    }
+}
+
+/// Coordinates rendering to a `Write` sink whilst caching layouts and
+/// enum buffers.  Designed to be short-lived per CLI action.
+struct RenderContext<'a, 'b, W: Write> {
+    out: &'a mut W,
+    schema: &'b SchemaTree,
+    verbose: bool,
+    style: DisplayStyle,
+    enum_buf: EnumBuffer<'b>,
+    layout_cache: HashMap<LayoutCacheKey, ColumnLayout>,
+}
+
+impl<'a, 'b, W: Write> RenderContext<'a, 'b, W> {
+    /// Create a new rendering context bound to an output sink and schema.
+    fn new(out: &'a mut W, schema: &'b SchemaTree, style: DisplayStyle, verbose: bool) -> Self {
+        Self {
+            out,
+            schema,
+            verbose,
+            style,
+            enum_buf: Vec::new(),
+            layout_cache: HashMap::new(),
+        }
+    }
+
+    /// Render a single message definition, optionally including header and
+    /// trailer blocks.  Responsible for kicking off component/group rendering.
+    fn render_message(
+        &mut self,
+        msg: &'b MessageNode,
+        include_header: bool,
+        include_trailer: bool,
+        indent_level: usize,
+    ) -> io::Result<()> {
+        let colours = self.style.colours();
+        writeln!(
+            self.out,
+            "Message: {}{}{} ({}{}{})",
+            colours.name, msg.name, colours.reset, colours.tag, msg.msg_type, colours.reset
+        )?;
+
+        let shared_style = if self.verbose && self.style.columns_enabled() {
+            let schema = self.schema;
+            self.style.ensure_layout(|| {
+                compute_message_layout(schema, msg, include_header, include_trailer, indent_level)
+            })
+        } else {
+            self.style
+        };
+
+        if include_header && let Some(header) = self.schema.components.get("Header") {
+            self.render_component_with_style(Some(msg), header, indent_level, shared_style)?;
+        }
+
+        writeln!(
+            self.out,
+            "{}Message: {}Body{}",
+            indent(indent_level),
+            colours.name,
+            colours.reset
+        )?;
+
+        self.print_field_collection(&msg.fields, indent_level, shared_style)?;
+        for component in &msg.components {
+            self.render_component_with_style(Some(msg), component, indent_level, shared_style)?;
+        }
+        for group in &msg.groups {
+            self.render_group_with_style(group, indent_level, shared_style)?;
+        }
+
+        if include_trailer && let Some(trailer) = self.schema.components.get("Trailer") {
+            self.render_component_with_style(Some(msg), trailer, indent_level, shared_style)?;
+        }
+        Ok(())
+    }
+
+    /// Render a component, respecting shared layout state when verbose column
+    /// mode is enabled.
+    fn render_component(
+        &mut self,
+        msg: Option<&'b MessageNode>,
+        component: &'b ComponentNode,
+        indent_level: usize,
+    ) -> io::Result<()> {
+        self.render_component_with_style(msg, component, indent_level, self.style)
+    }
+
+    fn render_component_with_style(
+        &mut self,
+        msg: Option<&'b MessageNode>,
+        component: &'b ComponentNode,
+        indent_level: usize,
+        style: DisplayStyle,
+    ) -> io::Result<()> {
+        let style = if self.verbose && style.columns_enabled() && style.layout().is_none() {
+            style.with_layout(self.cached_component_layout(component, indent_level))
+        } else {
+            style
+        };
+        let colours = style.colours();
+        writeln!(
+            self.out,
+            "{}Component: {}{}{}",
+            indent(indent_level),
+            colours.name,
+            component.name,
+            colours.reset
+        )?;
+
+        for field in &component.fields {
+            print_field(self.out, field, indent_level + 4, colours)?;
+            if self.verbose {
+                self.print_enums_for_field(field, msg, indent_level + 6, style)?;
+            }
+        }
+
+        for sub in &component.components {
+            self.render_component_with_style(msg, sub, indent_level + 4, style)?;
+        }
+
+        for group in &component.groups {
+            self.render_group_with_style(group, indent_level + 4, style)?;
+        }
+        Ok(())
+    }
+
+    /// Render a repeating group (and any nested structures) with shared
+    /// column layouts to keep verbose output tidy.
+    fn render_group(&mut self, group: &'b GroupNode, indent_level: usize) -> io::Result<()> {
+        self.render_group_with_style(group, indent_level, self.style)
+    }
+
+    fn render_group_with_style(
+        &mut self,
+        group: &'b GroupNode,
+        indent_level: usize,
+        style: DisplayStyle,
+    ) -> io::Result<()> {
+        let style = if self.verbose && style.columns_enabled() && style.layout().is_none() {
+            style.with_layout(self.cached_group_layout(group, indent_level))
+        } else {
+            style
+        };
+        let colours = style.colours();
+        writeln!(
+            self.out,
+            "{}Group: {}{}{}{}",
+            indent(indent_level),
+            colours.name,
+            group.name,
+            colours.reset,
+            format_required(group.required, colours)
+        )?;
+
+        self.print_field_collection(&group.fields, indent_level + 4, style)?;
+
+        for component in &group.components {
+            self.render_component_with_style(None, component, indent_level + 4, style)?;
+        }
+
+        for sub_group in &group.groups {
+            self.render_group_with_style(sub_group, indent_level + 4, style)?;
+        }
+        Ok(())
+    }
+
+    fn print_field_collection(
+        &mut self,
+        fields: &'b [FieldNode],
+        indent_level: usize,
+        style: DisplayStyle,
+    ) -> io::Result<()> {
+        let colours = style.colours();
+        for field in fields {
+            print_field(self.out, field, indent_level, colours)?;
+            if self.verbose {
+                if style.columns_enabled() {
+                    let values =
+                        collect_sorted_values(&mut self.enum_buf, field.field.values_iter());
+                    print_enum_columns(
+                        self.out,
+                        values,
+                        indent_level + 2,
+                        colours,
+                        style.layout(),
+                    )?;
+                } else {
+                    for value in field.field.values_iter() {
+                        print_enum(self.out, value, indent_level + 2, colours)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn print_enums_for_field(
+        &mut self,
+        field: &'b FieldNode,
+        msg: Option<&'b MessageNode>,
+        indent_level: usize,
+        style: DisplayStyle,
+    ) -> io::Result<()> {
+        let colours = style.colours();
+        if field.field.number == 35
+            && let Some(message) = msg
+        {
+            for value in field.field.values_iter() {
+                if value.enumeration == message.msg_type {
+                    writeln!(
+                        self.out,
+                        "{}{}{}{} : {}{}{}",
+                        indent(indent_level + 4),
+                        colours.value,
+                        value.enumeration,
+                        colours.reset,
+                        colours.enumeration,
+                        value.description,
+                        colours.reset
+                    )?;
+                    return Ok(());
+                }
+            }
+        }
+
+        if style.columns_enabled() {
+            let values = collect_sorted_values(&mut self.enum_buf, field.field.values_iter());
+            print_enum_columns(self.out, values, indent_level, colours, style.layout())?;
+        } else {
+            for value in field.field.values_iter() {
+                print_enum(self.out, value, indent_level, colours)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cached_component_layout(
+        &mut self,
+        component: &'b ComponentNode,
+        indent: usize,
+    ) -> Option<ColumnLayout> {
+        let key = LayoutCacheKey::component(&component.name, indent);
+        if let Some(layout) = self.layout_cache.get(&key) {
+            return Some(*layout);
+        }
+        let layout = compute_component_layout(component, indent);
+        if let Some(value) = layout {
+            self.layout_cache.insert(key, value);
+        }
+        layout
+    }
+
+    fn cached_group_layout(&mut self, group: &'b GroupNode, indent: usize) -> Option<ColumnLayout> {
+        let key = LayoutCacheKey::group(&group.name, indent);
+        if let Some(layout) = self.layout_cache.get(&key) {
+            return Some(*layout);
+        }
+        let layout = compute_group_layout(group, indent);
+        if let Some(value) = layout {
+            self.layout_cache.insert(key, value);
+        }
+        layout
+    }
+}
+
+pub fn print_message_columns(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut entries: Vec<_> = schema.messages.values().collect();
+    entries.sort_by(|a, b| a.msg_type.cmp(&b.msg_type));
+    let cells: Vec<_> = entries
+        .iter()
+        .map(|msg| message_cell(msg, colours))
+        .collect();
+    print_string_columns(&cells)
+}
+
+/// Print component names in columns for quick scanning.
+/// Print components in column form, primarily used by `--component` listings.
+pub fn print_component_columns(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut names: Vec<_> = schema.components.keys().cloned().collect();
+    names.sort();
+    let cells: Vec<_> = names
+        .iter()
+        .map(|name| component_cell(name, colours))
+        .collect();
+    print_string_columns(&cells)
+}
+
+/// List all messages with MsgType and name, one per line.
+pub fn list_all_messages(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut entries: Vec<_> = schema.messages.values().collect();
+    entries.sort_by(|a, b| a.msg_type.cmp(&b.msg_type));
+
+    let mut stdout = io::stdout().lock();
+    for msg in entries {
+        let cell = message_cell(msg, colours);
+        writeln!(stdout, "{}", cell.text)?;
+    }
+    Ok(())
+}
+
+/// List all components by name, one per line.
+pub fn list_all_components(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut names: Vec<_> = schema.components.keys().cloned().collect();
+    names.sort();
+
+    let mut stdout = io::stdout().lock();
+    for name in names {
+        let cell = component_cell(&name, colours);
+        writeln!(stdout, "{}", cell.text)?;
+    }
+    Ok(())
+}
+
+/// List all tags (fields) in numeric order, one per line.
+pub fn list_all_tags(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut fields: Vec<_> = schema.fields.values().collect();
+    fields.sort_by_key(|f| f.number);
+
+    let mut stdout = io::stdout().lock();
+    for field in fields {
+        let cell = tag_cell(field.number, &field.name, &field.field_type, false, colours);
+        writeln!(stdout, "{}", cell.text)?;
+    }
+    Ok(())
+}
+
+/// Print all tags in column form for compact display.
+pub fn print_tags_in_columns(schema: &SchemaTree) -> io::Result<()> {
+    let colours = palette();
+    let mut fields: Vec<_> = schema.fields.values().collect();
+    fields.sort_by_key(|f| f.number);
+
+    let cells: Vec<_> = fields
+        .iter()
+        .map(|field| tag_cell(field.number, &field.name, &field.field_type, false, colours))
+        .collect();
+
+    print_string_columns(&cells)
+}
+
+/// Print details for a single tag, optionally including its enum values.
+pub fn print_tag_details(field: &Field, verbose: bool, columns: bool) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    print_tag_details_with_writer(&mut handle, field, verbose, columns)
+}
+
+fn print_tag_details_with_writer(
+    out: &mut dyn Write,
+    field: &Field,
+    verbose: bool,
+    columns: bool,
+) -> io::Result<()> {
+    let colours = palette();
+    let cell = tag_cell(field.number, &field.name, &field.field_type, false, colours);
+    writeln!(out, "{}", cell.text)?;
+
+    if verbose {
+        if columns {
+            let mut buf = Vec::new();
+            let values = collect_sorted_values(&mut buf, field.values_iter());
+            let layout = compute_values_layout(values, 4);
+            print_enum_columns(out, values, 4, colours, layout)?;
+        } else {
+            for value in field.values_iter() {
+                print_enum(out, value, 4, colours)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Display a message definition with optional header/trailer and enum verbosity.
+pub fn display_message(
+    schema: &SchemaTree,
+    msg: &MessageNode,
+    verbose: bool,
+    include_header: bool,
+    include_trailer: bool,
+    indent_level: usize,
+    style: DisplayStyle,
+) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    RenderContext::new(&mut handle, schema, style, verbose).render_message(
+        msg,
+        include_header,
+        include_trailer,
+        indent_level,
+    )
+}
+
+pub fn display_component(
+    schema: &SchemaTree,
+    msg: Option<&MessageNode>,
+    component: &ComponentNode,
+    verbose: bool,
+    indent_level: usize,
+    style: DisplayStyle,
+) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    RenderContext::new(&mut handle, schema, style, verbose).render_component(
+        msg,
+        component,
+        indent_level,
+    )
+}
+
+#[allow(dead_code)]
+/// Display a group tree with the chosen style/verbosity.
+pub fn display_group(
+    schema: &SchemaTree,
+    group: &GroupNode,
+    verbose: bool,
+    indent_level: usize,
+    style: DisplayStyle,
+) -> io::Result<()> {
+    let stdout = io::stdout();
+    let mut handle = stdout.lock();
+    RenderContext::new(&mut handle, schema, style, verbose).render_group(group, indent_level)
+}
+
+fn compute_message_layout(
+    schema: &SchemaTree,
+    msg: &MessageNode,
+    include_header: bool,
+    include_trailer: bool,
+    indent_level: usize,
+) -> Option<ColumnLayout> {
+    let mut stats = LayoutStats::default();
+    collect_fields_layout(&msg.fields, indent_level + 2, &mut stats);
+    for component in &msg.components {
+        collect_component_layout(component, indent_level, &mut stats);
+    }
+    for group in &msg.groups {
+        collect_group_layout(group, indent_level, &mut stats);
+    }
+    if include_header && let Some(header) = schema.components.get("Header") {
+        collect_component_layout(header, indent_level, &mut stats);
+    }
+    if include_trailer && let Some(trailer) = schema.components.get("Trailer") {
+        collect_component_layout(trailer, indent_level, &mut stats);
+    }
+    stats.finalize()
+}
+
+fn compute_component_layout(
+    component: &ComponentNode,
+    indent_level: usize,
+) -> Option<ColumnLayout> {
+    let mut stats = LayoutStats::default();
+    collect_component_layout(component, indent_level, &mut stats);
+    stats.finalize()
+}
+
+fn compute_group_layout(group: &GroupNode, indent_level: usize) -> Option<ColumnLayout> {
+    let mut stats = LayoutStats::default();
+    collect_group_layout(group, indent_level, &mut stats);
+    stats.finalize()
+}
+
+fn compute_values_layout(values: &[&Value], indent_level: usize) -> Option<ColumnLayout> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut stats = LayoutStats::default();
+    let max_entry = values
+        .iter()
+        .map(|v| v.enumeration.len() + 2 + v.description.len())
+        .max()
+        .unwrap_or(0);
+    stats.record(max_entry, indent_level);
+    stats.finalize()
+}
+
+fn collect_fields_layout(fields: &[FieldNode], indent_level: usize, stats: &mut LayoutStats) {
+    for field in fields {
+        let max_entry = field
+            .field
+            .values_iter()
+            .map(|v| v.enumeration.len() + 2 + v.description.len())
+            .max()
+            .unwrap_or(0);
+        stats.record(max_entry, indent_level);
+    }
+}
+
+fn collect_component_layout(
+    component: &ComponentNode,
+    indent_level: usize,
+    stats: &mut LayoutStats,
+) {
+    collect_fields_layout(&component.fields, indent_level + 6, stats);
+    for sub in &component.components {
+        collect_component_layout(sub, indent_level + 4, stats);
+    }
+    for group in &component.groups {
+        collect_group_layout(group, indent_level + 4, stats);
+    }
+}
+
+fn collect_group_layout(group: &GroupNode, indent_level: usize, stats: &mut LayoutStats) {
+    collect_fields_layout(&group.fields, indent_level + 6, stats);
+    for component in &group.components {
+        collect_component_layout(component, indent_level + 4, stats);
+    }
+    for sub in &group.groups {
+        collect_group_layout(sub, indent_level + 4, stats);
+    }
+}
+
+#[allow(dead_code)]
+/// Print a one-line schema summary (counts + version information) to stdout.
+pub fn print_schema_summary(schema: &SchemaTree) {
+    let mut stdout = io::stdout().lock();
+    let _ = writeln!(
+        stdout,
+        "Fields: {}   Components: {}   Messages: {}   Version: {}  Service Pack: {}",
+        schema.fields.len(),
+        schema.components.len(),
+        schema.messages.len(),
+        schema.version,
+        schema.service_pack
+    );
+}
+
+fn visible_len(text: &str) -> usize {
+    let mut len = 0;
+    let mut in_escape = false;
+
+    for ch in text.chars() {
+        if in_escape {
+            if ch == 'm' {
+                in_escape = false;
+            }
+            continue;
+        }
+
+        if ch == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+
+        len += 1;
+    }
+
+    len
+}
+
+fn write_with_padding<F>(
+    out: &mut dyn Write,
+    visible_len: usize,
+    width: usize,
+    render: F,
+) -> io::Result<()>
+where
+    F: FnOnce(&mut dyn Write) -> io::Result<()>,
+{
+    render(out)?;
+    if width > visible_len {
+        let pad = width - visible_len;
+        write!(out, "{:width$}", "", width = pad)?;
+    }
+    Ok(())
+}

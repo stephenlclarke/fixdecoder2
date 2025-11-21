@@ -3,18 +3,18 @@
 
 ---
 
-[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=alert_status&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=bugs&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=code_smells&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=coverage&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=duplicated_lines_density&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=ncloc&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=reliability_rating&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=reliability_rating&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=sqale_index&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=sqale_rating&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder&metric=vulnerabilities&token=693074ba90b11562241b1e602d8dc9ec0ef7bff5)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder)
-![Repo Visitors](https://visitor-badge.laobi.icu/badge?page_id=stephenlclarke.fixdecoder)
+[![Quality Gate Status](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=alert_status)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Bugs](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=bugs)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Code Smells](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=code_smells)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Coverage](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=coverage)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Duplicated Lines (%)](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=duplicated_lines_density)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Lines of Code](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=ncloc)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Reliability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=reliability_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Security Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=security_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Technical Debt](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=sqale_index)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Maintainability Rating](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=sqale_rating)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+[![Vulnerabilities](https://sonarcloud.io/api/project_badges/measure?project=stephenlclarke_fixdecoder2&metric=vulnerabilities)](https://sonarcloud.io/summary/new_code?id=stephenlclarke_fixdecoder2)
+![Repo Visitors](https://visitor-badge.laobi.icu/badge?page_id=stephenlclarke.fixdecoder2)
 
 ---
 
@@ -53,84 +53,63 @@ I plan to produce an update shortly that will also look at `DefaultApplVerID (ta
 ## Running the utility
 
 ```bash
-❯ bin/fixdecoder-2.0.3-develop.darwin-arm64 --help
-fixdecoder v2.0.3-develop (branch:develop, commit:01dca64)
-  git clone git@github.com:stephenlclarke/fixdecoder.git
-Usage: fixdecoder [[--fix=44] | [--xml=FIX44.xml]] [--message[=MSG] [--verbose] [--column] [--header] [--trailer]]
-       fixdecoder [[--fix=44] | [--xml=FIX44.xml]] [--tag[=TAG] [--verbose] [--column]]
-       fixdecoder [[--fix=44] | [--xml=FIX44.xml]] [--component=[NAME] [--verbose]]
-       fixdecoder [[--fix=44] | [--xml=FIX44.xml]] [--info]
-       fixdecoder [--validate] [--colour=yes|no] [--secret] [file1.log file2.log ...]
-       fixdecoder [--version]
+❯ target/debug/fixdecoder --help
+fixdecoder v0.1.0 (branch:main, commit:f54194a)
 
-Flags:
-  -colour
-      Force coloured output (yes|no). Default: auto-detect based on stdout
-  -column
-      Display enums in columns
-  -component
-      Component to display (omit to list all components)
-  -fix string
-      FIX version to use (40,41,42,43,44,50,50SP1,50SP2,T11) (default "44")
-  -header
-      Include Header block
-  -info
-      Show XML schema summary (fields, components, messages, version counts)
-  -message
-      Message name or MsgType (omit to list all messages)
-  -secret
-      Obfuscate sensitive FIX tag values
-  -tag
-      Tag number to display details for (omit to list all tags)
-  -trailer
-      Include Trailer block
-  -validate
-      Validate FIX messages during decoding
-  -verbose
-      Show full message structure with enums
-  -version
-      Print version information and exit
-  -xml string
-      Path to alternative FIX XML file
+FIX protocol decoder tools
 
-❯ ./bin/fixdecoder/v2.0.3-develop/fixdecoder --help
-fixdecoder v2.0.3-develop (branch:develop, commit:f3c0f91)
+Usage: fixdecoder [OPTIONS] [FILE]...
 
-  git clone git@github.com:stephenlclarke/fixdecoder.git
+Arguments:
+  [FILE]...  
 
-Usage: fixdecoder [[--fix=44] | [--xml FIX44.xml]] [--message[=MSG] [--verbose] [--column] [--header] [--trailer]]
-       fixdecoder [[--fix=44] | [--xml FIX44.xml]] [--tag[=TAG] [--verbose] [--column]]
-       fixdecoder [[--fix=44] | [--xml FIX44.xml]] [--component=[NAME] [--verbose]]
-       fixdecoder [[--fix=44] | [--xml FIX44.xml]] [--info]
-       fixdecoder [--validate] [--colour=yes|no] [file1.log file2.log ...]
+Options:
+      --fix <VER>           FIX version to use [default: 44]
+      --xml <FILE>          Path to alternative FIX XML dictionary (repeatable)
+      --message [<MSG>]     FIX Message name or MsgType (omit value to list all)
+      --component [<NAME>]  FIX Component to display (omit value to list all)
+      --tag [<TAG>]         FIX Tag number to display (omit value to list all)
+      --column              Display enums in columns
+      --header              Include Header block
+      --trailer             Include Trailer block
+      --verbose             Show full message structure with enums
+      --info                Show schema summary
+      --secret              Obfuscate sensitive FIX tag values
+      --validate            Validate FIX messages during decoding
+      --colour [<yes|no>]   Force coloured output
+      --delimiter <CHAR>    Display delimiter between FIX fields (default: SOH)
+      --version             Print version information and exit
+  -h, --help                Print help
 
-Flags:
-  --colour
-        Force coloured output (yes|no). Default: auto-detect based on stdout
-  --column
-        Display enums in columns
-  --component
-        Component to display (omit to list all components)
-  --fix string
-        FIX version to use (40,41,42,43,44,50,50SP1,50SP2,T11) (default "44")
-  --header
-        Include Header block
-  --info
-        Show XML schema summary (fields, components, messages, version counts)
-  --message
-        Message name or MsgType (omit to list all messages)
-  --secret
-        Obfuscate sensitive FIX tag values
-  --tag
-        Tag number to display details for (omit to list all tags)
-  --trailer
-        Include Trailer block
-  --validate
-        Validate FIX messages during decoding
-  --verbose
-        Show full message structure with enums
-  --xml string
-        Path to alternative FIX XML file
+Command line option examples:
+
+  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer] [--delimiter=CHAR]]
+  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column] [--delimiter=CHAR]]
+  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column] [--delimiter=CHAR]]
+  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
+  fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--delimiter=CHAR] [file1.log file2.log ...]
+  fixdecoder [--version]
+```
+
+```bash
+❯ target/debug/fixdecoder --info
+fixdecoder v0.1.0 (branch:main, commit:f54194a)
+
+Available FIX Dictionaries: FIX27,FIX30,FIX40,FIX41,FIX42,FIX43,FIX44,FIX50,FIX50SP1,FIX50SP2,FIXT11
+
+Loaded dictionaries:
+  Version     ServicePack   Fields  Components    Messages Source
+  FIX27                 0      138           2          27 built-in
+  FIX30                 0      138           2          27 built-in
+  FIX40                 0      138           2          27 built-in
+  FIX41                 0      206           2          28 built-in
+  FIX42                 0      405           2          46 built-in
+  FIX43                 0      635          12          68 built-in
+  FIX44                 0      912         106          93 built-in
+  FIX50                 0     1090         123          93 built-in
+  FIX50SP1              1     1373         165         105 built-in
+  FIX50SP2              2     6028         727         156 built-in
+  FIXT11                0       71           4           8 built-in
 ```
 
 ## How to get it

@@ -1,0 +1,150 @@
+# CI pipeline for the Rust implementation
+name: CI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+  pull_request:
+
+jobs:
+  build:
+    name: Build release (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            rustflags: "-C target-feature=+crt-static"
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
+          - os: macos-14
+            target: aarch64-apple-darwin
+            artifact_path: target/aarch64-apple-darwin/release/fixdecoder
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_path: target/x86_64-apple-darwin/release/fixdecoder
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_path: target/x86_64-pc-windows-msvc/release/fixdecoder.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt,llvm-tools-preview
+          targets: ${{ matrix.target }}
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-cargo-
+      - name: Install target dependencies
+        if: ${{ matrix.setup != '' }}
+        run: ${{ matrix.setup }}
+      - name: Build release
+        run: |
+          ./ci.sh setup-environment
+          RUSTFLAGS="${{ matrix.rustflags }}" cargo build --release --target ${{ matrix.target }}
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixdecoder-${{ matrix.target }}
+          path: ${{ matrix.artifact_path }}
+
+  quality:
+    name: Lint & Coverage
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt,llvm-tools-preview
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+      - name: Run scan and coverage
+        run: ./ci.sh scan coverage
+      - name: Upload coverage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: target/coverage/coverage.xml
+          if-no-files-found: error
+
+  sonar:
+    name: Sonar (coverage import)
+    runs-on: ubuntu-latest
+    needs: quality
+    container: sonarsource/sonar-scanner-cli:5.0.1.3006
+    env:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download coverage artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: coverage-xml
+          path: target/coverage
+      - name: Run sonar-scanner
+        run: sonar-scanner
+
+  release:
+    name: Publish Release
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract version
+        id: version
+        run: |
+          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fixdecoder-*
+          path: dist
+          merge-multiple: true
+      - name: Rename artifacts with version
+        run: |
+          ver="${{ steps.version.outputs.version }}"
+          cd dist
+          for f in *; do
+            case "$f" in
+              *.exe)
+                mv "$f" "fixdecoder-${ver}-${f}"
+                ;;
+              fixdecoder*)
+                mv "$f" "fixdecoder-${ver}-${f#fixdecoder-}"
+                ;;
+            esac
+          done
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: Version ${{ steps.version.outputs.version }}
+          files: dist/*
