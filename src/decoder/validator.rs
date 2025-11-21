@@ -8,34 +8,58 @@ use once_cell::sync::Lazy;
 use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
+#[derive(Debug, Default)]
+pub struct ValidationReport {
+    pub errors: Vec<String>,
+    pub tag_errors: HashMap<u32, Vec<String>>,
+}
+
+impl ValidationReport {
+    pub fn is_clean(&self) -> bool {
+        self.errors.is_empty()
+    }
+}
+
 /// Validate a single FIX message string against the provided dictionary,
 /// returning a list of human-readable errors (or empty when valid).
-pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> Vec<String> {
+pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> ValidationReport {
     let fields = parse_fix(msg);
     let (field_map, seen_tags, duplicates) = build_field_map(&fields, dict);
     let mut errors = Vec::new();
+    let mut tag_errors: HashMap<u32, Vec<String>> = HashMap::new();
 
     for dup in duplicates {
-        errors.push(format!("Duplicate tag {} encountered", dup));
+        let err = format!("Duplicate tag {} encountered", dup);
+        errors.push(err.clone());
+        tag_errors.entry(dup).or_default().push(err);
     }
 
     let (msg_type_errs, msg_def_opt) = validate_msg_type(&field_map, dict);
     errors.extend(msg_type_errs);
     let Some(msg_def) = msg_def_opt else {
-        return errors;
+        return ValidationReport { errors, tag_errors };
     };
 
     errors.extend(validate_required_fields(
         &msg_def.required,
         &seen_tags,
         dict,
+        &mut tag_errors,
     ));
-    errors.extend(validate_body_length(msg, &field_map));
-    errors.extend(validate_field_enums_and_types(&fields, dict));
-    errors.extend(validate_field_ordering(&fields, &msg_def.field_order));
-    errors.extend(validate_checksum_field(msg, &field_map));
+    errors.extend(validate_body_length(msg, &field_map, &mut tag_errors));
+    errors.extend(validate_field_enums_and_types(
+        &fields,
+        dict,
+        &mut tag_errors,
+    ));
+    errors.extend(validate_field_ordering(
+        &fields,
+        &msg_def.field_order,
+        &mut tag_errors,
+    ));
+    errors.extend(validate_checksum_field(msg, &field_map, &mut tag_errors));
 
-    errors
+    ValidationReport { errors, tag_errors }
 }
 
 fn build_field_map(
@@ -71,45 +95,53 @@ fn validate_required_fields(
     required: &[u32],
     seen_tags: &HashSet<u32>,
     dict: &FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for tag in required {
         if !seen_tags.contains(tag) {
-            errors.push(format!(
-                "Missing required tag {} ({})",
-                tag,
-                dict.field_name(*tag)
-            ));
+            let err = format!("Missing required tag {} ({})", tag, dict.field_name(*tag));
+            errors.push(err.clone());
+            tag_errors.entry(*tag).or_default().push(err);
         }
     }
     errors
 }
 
-fn validate_field_enums_and_types(fields: &[FieldValue], dict: &FixTagLookup) -> Vec<String> {
+fn validate_field_enums_and_types(
+    fields: &[FieldValue],
+    dict: &FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     for field in fields {
         if let Some(enums) = dict.enums_for(field.tag)
             && !enums.contains_key(&field.value)
         {
-            errors.push(format!(
-                "Invalid enum value '{}' for tag {}",
-                field.value, field.tag
-            ));
+            let err = format!("Invalid enum value '{}'", field.value);
+            errors.push(err.clone());
+            tag_errors.entry(field.tag).or_default().push(err);
         }
 
         if let Some(field_type) = dict.field_type(field.tag)
             && !is_valid_type(&field.value, field_type)
         {
-            errors.push(format!(
-                "Invalid type for tag {}: expected {}, got '{}'",
-                field.tag, field_type, field.value
-            ));
+            let err = format!(
+                "Invalid type: expected {}, got '{}'",
+                field_type, field.value
+            );
+            errors.push(err.clone());
+            tag_errors.entry(field.tag).or_default().push(err);
         }
     }
     errors
 }
 
-fn validate_field_ordering(fields: &[FieldValue], expected_order: &[u32]) -> Vec<String> {
+fn validate_field_ordering(
+    fields: &[FieldValue],
+    expected_order: &[u32],
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> Vec<String> {
     let mut order_index = HashMap::new();
     for (idx, tag) in expected_order.iter().enumerate() {
         order_index.insert(*tag, idx);
@@ -121,7 +153,9 @@ fn validate_field_ordering(fields: &[FieldValue], expected_order: &[u32]) -> Vec
         if let Some(&idx) = order_index.get(&field.tag) {
             let idx = idx as isize;
             if idx < last_index {
-                errors.push(format!("Tag {} out of order", field.tag));
+                let err = format!("Tag {} out of order", field.tag);
+                errors.push(err.clone());
+                tag_errors.entry(field.tag).or_default().push(err);
             }
             last_index = idx;
         }
@@ -129,24 +163,31 @@ fn validate_field_ordering(fields: &[FieldValue], expected_order: &[u32]) -> Vec
     errors
 }
 
-fn validate_checksum_field(msg: &str, field_map: &HashMap<u32, String>) -> Vec<String> {
+fn validate_checksum_field(
+    msg: &str,
+    field_map: &HashMap<u32, String>,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     match field_map.get(&10) {
         None => errors.push("Missing required checksum tag 10".to_string()),
         Some(value) => {
             let expected = format!("{:03}", calculate_checksum(msg));
             if &expected != value {
-                errors.push(format!(
-                    "Checksum mismatch: got {}, expected {}",
-                    value, expected
-                ));
+                let err = format!("Checksum mismatch: got {}, expected {}", value, expected);
+                errors.push(err.clone());
+                tag_errors.entry(10).or_default().push(err);
             }
         }
     }
     errors
 }
 
-fn validate_body_length(msg: &str, field_map: &HashMap<u32, String>) -> Vec<String> {
+fn validate_body_length(
+    msg: &str,
+    field_map: &HashMap<u32, String>,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> Vec<String> {
     let mut errors = Vec::new();
     match field_map.get(&9) {
         None => errors.push("Missing required BodyLength tag 9".to_string()),
@@ -154,10 +195,11 @@ fn validate_body_length(msg: &str, field_map: &HashMap<u32, String>) -> Vec<Stri
             Err(_) => errors.push(format!("Invalid BodyLength value '{}'", value)),
             Ok(declared) => match compute_actual_body_length(msg) {
                 None => errors.push("Unable to compute BodyLength from message".to_string()),
-                Some(actual) if declared != actual => errors.push(format!(
-                    "BodyLength mismatch: got {}, expected {}",
-                    declared, actual
-                )),
+                Some(actual) if declared != actual => {
+                    let err = format!("BodyLength mismatch: got {}, expected {}", declared, actual);
+                    tag_errors.entry(9).or_default().push(err.clone());
+                    errors.push(err);
+                }
                 _ => {}
             },
         },
@@ -207,6 +249,9 @@ fn is_valid_timestamp(value: &str) -> bool {
         .any(|fmt| NaiveDateTime::parse_from_str(value, fmt).is_ok())
 }
 
+static MONTH_YEAR_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^\d{6}(\d{2}|(-\d{1,2})|(-?w[1-5]))?$").expect("valid regex"));
+
 fn compute_actual_body_length(msg: &str) -> Option<usize> {
     const SOH: u8 = 0x01;
     let bytes = msg.as_bytes();
@@ -223,8 +268,8 @@ fn compute_actual_body_length(msg: &str) -> Option<usize> {
 
     // find delimiter after 9= value
     let mut body_start = None;
-    for i in len_pos..bytes.len() {
-        if bytes[i] == SOH {
+    for (i, byte) in bytes.iter().enumerate().skip(len_pos) {
+        if *byte == SOH {
             body_start = Some(i + 1);
             break;
         }
@@ -345,7 +390,7 @@ mod tests {
         for (tag, value) in fields {
             body.push_str(&format!("{tag}={value}{SOH}"));
         }
-        let body_len = declared_body_len.unwrap_or_else(|| body.as_bytes().len());
+        let body_len = declared_body_len.unwrap_or(body.len());
         let mut msg = format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body_len, body);
         let checksum = calculate_checksum(&format!("{msg}10=000{SOH}"));
         msg.push_str(&format!("10={:03}{SOH}", checksum));
@@ -361,9 +406,9 @@ mod tests {
         );
         let errors = validate_fix_message(&msg, &dict);
         assert!(
-            errors.is_empty(),
+            errors.is_clean(),
             "expected no errors for valid repeating group message: {:?}",
-            errors
+            errors.errors
         );
     }
 
@@ -373,9 +418,12 @@ mod tests {
         let msg = build_message(&[(35, "Z"), (100, "1"), (101, "ONLY")], Some(999));
         let errors = validate_fix_message(&msg, &dict);
         assert!(
-            errors.iter().any(|e| e.contains("BodyLength mismatch")),
-            "expected body length error, got {:?}",
             errors
+                .errors
+                .iter()
+                .any(|e| e.contains("BodyLength mismatch")),
+            "expected body length error, got {:?}",
+            errors.errors
         );
     }
 
@@ -390,12 +438,12 @@ mod tests {
         }
         let errors = validate_fix_message(&msg, &dict);
         assert!(
-            errors.iter().any(|e| e.contains("Checksum mismatch")),
-            "expected checksum mismatch, got {:?}",
             errors
+                .errors
+                .iter()
+                .any(|e| e.contains("Checksum mismatch")),
+            "expected checksum mismatch, got {:?}",
+            errors.errors
         );
     }
 }
-
-static MONTH_YEAR_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"^\d{6}(\d{2}|(-\d{1,2})|(-?w[1-5]))?$").expect("valid regex"));

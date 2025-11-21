@@ -3,7 +3,7 @@
 
 use crate::decoder::colours::{disable_colours, palette};
 use crate::decoder::fixparser::parse_fix;
-use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary};
+use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary};
 use crate::decoder::validator;
 use crate::fix;
 use once_cell::sync::Lazy;
@@ -38,34 +38,65 @@ pub fn validation_enabled() -> bool {
 }
 
 /// Render a single FIX message into a human-friendly string using the provided dictionary.
-pub fn prettify(msg: &str, dict: &FixTagLookup) -> String {
+pub fn prettify_with_report(
+    msg: &str,
+    dict: &FixTagLookup,
+    report: Option<&validator::ValidationReport>,
+) -> String {
     let colours = palette();
     let mut output = String::new();
+    let fields = parse_fix(msg);
+    let mut tag_map: std::collections::HashMap<u32, Vec<&_>> = std::collections::HashMap::new();
+    for field in &fields {
+        tag_map.entry(field.tag).or_default().push(field);
+    }
 
-    for field in parse_fix(msg) {
-        let name = dict.field_name(field.tag);
-        let desc = dict.enum_description(field.tag, &field.value);
-        output.push_str(&format!(
-            "    {}{:4}{} ({}{}{}): {}{}{}",
-            colours.tag,
-            field.tag,
-            colours.reset,
-            colours.name,
-            name,
-            colours.reset,
-            colours.value,
-            field.value,
-            colours.reset
-        ));
+    let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
+    let message_def: Option<MessageDef> = msg_type
+        .as_deref()
+        .and_then(|mt| dict.message_def(mt).cloned());
 
-        if let Some(description) = desc {
+    let ordered_tags: Vec<u32> = message_def
+        .as_ref()
+        .map(|def| def.field_order.clone())
+        .unwrap_or_else(|| fields.iter().map(|f| f.tag).collect());
+
+    let annotations = report.map(|r| &r.tag_errors);
+
+    for tag in ordered_tags {
+        if let Some(values) = tag_map.remove(&tag) {
+            for field in values {
+                write_field_line(&mut output, dict, field, annotations, &colours);
+            }
+        } else if let Some(_errors) = annotations
+            .and_then(|ann| ann.get(&tag))
+            .filter(|errs| !errs.is_empty())
+        {
+            let name = dict.field_name(tag);
+            let err_text = "Missing";
             output.push_str(&format!(
-                " ({}{}{})",
-                colours.enumeration, description, colours.reset
+                "    {}{:4}{} ({}{}{}): {}{}{}\n",
+                colours.error,
+                tag,
+                colours.reset,
+                colours.name,
+                name,
+                colours.reset,
+                colours.error,
+                err_text,
+                colours.reset
             ));
         }
+    }
 
-        output.push('\n');
+    // Any tags not in the expected order (e.g., unknown/extra) are appended in original order.
+    for field in &fields {
+        if let Some(values) = tag_map.get_mut(&field.tag)
+            && !values.is_empty()
+        {
+            let f = values.remove(0);
+            write_field_line(&mut output, dict, f, annotations, &colours);
+        }
     }
 
     output
@@ -98,6 +129,49 @@ pub fn prettify_files(
     }
 
     if had_error { 1 } else { 0 }
+}
+
+fn write_field_line(
+    output: &mut String,
+    dict: &FixTagLookup,
+    field: &crate::decoder::fixparser::FieldValue,
+    annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
+    colours: &crate::decoder::colours::ColourPalette,
+) {
+    let tag_errors: Option<&Vec<String>> = annotations.and_then(|ann| ann.get(&field.tag));
+    let tag_colour = if tag_errors.is_some() {
+        colours.error
+    } else {
+        colours.tag
+    };
+    let name = dict.field_name(field.tag);
+    let desc = dict.enum_description(field.tag, &field.value);
+    output.push_str(&format!(
+        "    {}{:4}{} ({}{}{}): {}{}{}",
+        tag_colour,
+        field.tag,
+        colours.reset,
+        colours.name,
+        name,
+        colours.reset,
+        colours.value,
+        field.value,
+        colours.reset
+    ));
+
+    if let Some(description) = desc {
+        output.push_str(&format!(
+            " ({}{}{})",
+            colours.enumeration, description, colours.reset
+        ));
+    }
+
+    if let Some(errs) = tag_errors {
+        let msg = errs.join(", ");
+        output.push_str(&format!("  {}{}{}", colours.error, msg, colours.reset));
+    }
+
+    output.push('\n');
 }
 
 fn handle_stdin(
@@ -235,12 +309,12 @@ fn handle_log_line(
     for (start, end) in matches {
         let msg = &line[start..end];
         let dict = load_dictionary(msg);
-        let errors = validator::validate_fix_message(msg, &dict);
-        if errors.is_empty() {
+        let report = validator::validate_fix_message(msg, &dict);
+        if report.is_clean() {
             continue;
         }
-        let pretty = prettify(msg, &dict);
-        invalid.push((msg.to_string(), pretty, errors));
+        let pretty = prettify_with_report(msg, &dict, Some(&report));
+        invalid.push((msg.to_string(), pretty, report.errors));
     }
 
     if invalid.is_empty() {
@@ -254,11 +328,8 @@ fn handle_log_line(
         line_number, colours.line, display_line, colours.reset
     )?;
 
-    for (_, pretty, errors) in invalid {
+    for (_, pretty, _) in invalid {
         write!(out, "{pretty}")?;
-        for err in errors {
-            writeln!(out, "  !! {}", err)?;
-        }
         writeln!(out)?;
     }
 
@@ -329,15 +400,15 @@ fn apply_display_delimiter<'a>(text: &'a str, delimiter: char) -> Cow<'a, str> {
 
 fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::Result<()> {
     let dict = load_dictionary(msg);
-    let pretty = prettify(msg, &dict);
+    let pretty = prettify_with_report(msg, &dict, None);
     write!(out, "{pretty}")?;
 
     if VALIDATION_ENABLED.load(Ordering::Relaxed) {
-        let errors = validator::validate_fix_message(msg, &dict);
-        if !errors.is_empty() {
+        let report = validator::validate_fix_message(msg, &dict);
+        if !report.errors.is_empty() {
             let colours = palette();
             write!(out, "{separator}")?;
-            for err in errors {
+            for err in report.errors {
                 writeln!(out, "{}== {}{}", colours.error, err, colours.reset)?;
             }
         }
@@ -367,7 +438,7 @@ mod tests {
         set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let body = format!("35=0{SOH}34=1{SOH}49=AAA{SOH}52=20240101-00:00:00{SOH}56=BBB{SOH}");
-        let declared_len = body.as_bytes().len() + 1; // intentionally wrong
+        let declared_len = body.len() + 1; // intentionally wrong
         let msg_without_checksum = format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", declared_len, body);
         let checksum = validator::calculate_checksum(&format!("{msg_without_checksum}10=000{SOH}"));
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
@@ -416,15 +487,15 @@ mod tests {
 
         let body = build_body_from_order(&order, &values);
         let msg_without_checksum =
-            format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body.as_bytes().len(), body);
+            format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body.len(), body);
         let checksum = validator::calculate_checksum(&format!("{msg_without_checksum}10=000{SOH}"));
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
         let dict = load_dictionary(&msg);
         let errs = validator::validate_fix_message(&msg, &dict);
         assert!(
-            errs.is_empty(),
+            errs.is_clean(),
             "message used for validation bypass should be valid, got {:?}",
-            errs
+            errs.errors
         );
         let line = format!("{msg}\n");
         let mut out = Vec::new();
