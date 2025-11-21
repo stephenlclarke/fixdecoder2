@@ -49,6 +49,16 @@ impl Obfuscator {
         self.obfuscate_line(line)
     }
 
+    /// Clear all cached aliases to start a new obfuscation session (e.g. per file).
+    pub fn reset(&self) {
+        if !self.enabled {
+            return;
+        }
+        let mut state = self.state.lock().expect("obfuscator mutex poisoned");
+        state.alias_map.clear();
+        state.counters.clear();
+    }
+
     /// Core obfuscation routine shared by the public wrapper.  Keeps the
     /// state machine private whilst making it easy to test.
     pub fn obfuscate_line(&self, line: &str) -> String {
@@ -115,4 +125,21 @@ fn split_once(fragment: &str) -> Option<(&str, &str)> {
         return Some((&fragment[..idx], &fragment[idx + 1..]));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fix::SENSITIVE_TAG_NAMES;
+
+    #[test]
+    fn reset_starts_aliases_over() {
+        let obfuscator = Obfuscator::from_sensitive_tags(&SENSITIVE_TAG_NAMES, true);
+        let first = obfuscator.obfuscate_line("49=ABC\u{0001}");
+        let second = obfuscator.obfuscate_line("49=DEF\u{0001}");
+        assert_ne!(first, second);
+        obfuscator.reset();
+        let third = obfuscator.obfuscate_line("49=ABC\u{0001}");
+        assert_eq!(first, third, "aliases should restart after reset");
+    }
 }

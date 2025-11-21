@@ -119,6 +119,7 @@ fn run() -> Result<i32> {
     set_validation(opts.validate);
 
     let custom_dicts = load_custom_dictionaries(&opts.xml_paths)?;
+    ensure_valid_fix_version(&opts, &custom_dicts)?;
     let schema = load_schema(&opts, &custom_dicts)?;
 
     if run_handlers(&opts, &schema, &custom_dicts)? {
@@ -521,6 +522,27 @@ fn run_handlers(
     Ok(handled)
 }
 
+/// Ensure user-supplied FIX versions map to either built-in or custom dictionaries.
+fn ensure_valid_fix_version(
+    opts: &CliOptions,
+    custom_dicts: &HashMap<String, CustomDictionary>,
+) -> Result<()> {
+    if !opts.fix_from_user {
+        return Ok(());
+    }
+
+    if let Some(key) = normalise_fix_key(&opts.fix_version) {
+        let builtin = built_in_fix_keys();
+        if builtin.contains(&key) || custom_dicts.contains_key(&key) {
+            return Ok(());
+        }
+    }
+
+    eprintln!("Invalid --fix value: {}", opts.fix_version);
+    print_usage();
+    Err(anyhow!("invalid --fix value"))
+}
+
 /// Locate a message definition by name or MsgType, returning the matching node if found.
 fn find_message<'a>(
     schema: &'a SchemaTree,
@@ -839,6 +861,32 @@ fn handle_components(opts: &CliOptions, schema: &SchemaTree) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
+
+    fn dummy_opts(version: &str) -> CliOptions {
+        CliOptions {
+            fix_version: version.to_string(),
+            fix_from_user: true,
+            xml_paths: Vec::new(),
+            message_flag: false,
+            message_value: None,
+            component_flag: false,
+            component_value: None,
+            tag_flag: false,
+            tag_value: None,
+            column: false,
+            verbose: false,
+            include_header: false,
+            include_trailer: false,
+            info: false,
+            secret: false,
+            validate: false,
+            colour: None,
+            show_version: false,
+            files: Vec::new(),
+            delimiter: '\u{0001}',
+        }
+    }
 
     #[test]
     fn version_string_matches_components() {
@@ -855,5 +903,19 @@ mod tests {
         let first = version_str() as *const str;
         let second = version_str() as *const str;
         assert_eq!(first, second, "cached version string should be stable");
+    }
+
+    #[test]
+    fn invalid_fix_version_errors() {
+        let opts = dummy_opts("45");
+        let res = ensure_valid_fix_version(&opts, &HashMap::new());
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn valid_fix_version_passes() {
+        let opts = dummy_opts("44");
+        let res = ensure_valid_fix_version(&opts, &HashMap::new());
+        assert!(res.is_ok());
     }
 }

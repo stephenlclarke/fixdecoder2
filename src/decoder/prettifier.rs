@@ -33,6 +33,10 @@ pub fn set_validation(enabled: bool) {
     VALIDATION_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+pub fn validation_enabled() -> bool {
+    VALIDATION_ENABLED.load(Ordering::Relaxed)
+}
+
 /// Render a single FIX message into a human-friendly string using the provided dictionary.
 pub fn prettify(msg: &str, dict: &FixTagLookup) -> String {
     let colours = palette();
@@ -102,7 +106,10 @@ fn handle_stdin(
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
 ) -> i32 {
-    let _ = writeln!(out, "Processing: (stdin)\n");
+    obfuscator.reset();
+    if !validation_enabled() {
+        let _ = writeln!(out, "Processing: (stdin)\n");
+    }
     if stream_reader(
         BufReader::new(io::stdin().lock()),
         out,
@@ -129,12 +136,15 @@ fn handle_file(
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
 ) -> io::Result<()> {
+    obfuscator.reset();
     let colours = palette();
-    let _ = writeln!(
-        out,
-        "Processing: {}{}{}\n",
-        colours.file, path, colours.reset
-    );
+    if !validation_enabled() {
+        let _ = writeln!(
+            out,
+            "Processing: {}{}{}\n",
+            colours.file, path, colours.reset
+        );
+    }
 
     match File::open(path) {
         Ok(file) => {
@@ -167,12 +177,14 @@ fn stream_reader<R: BufRead>(
         colours.reset
     );
 
+    let mut line_number = 0usize;
     loop {
         line.clear();
         let bytes = reader.read_line(&mut line)?;
         if bytes == 0 {
             break;
         }
+        line_number += 1;
 
         if line.ends_with('\n') {
             line.pop();
@@ -182,7 +194,7 @@ fn stream_reader<R: BufRead>(
         }
 
         let processed = obfuscator.enabled_line(&line);
-        handle_log_line(&processed, out, &separator, display_delimiter)?;
+        handle_log_line(&processed, line_number, out, &separator, display_delimiter)?;
     }
 
     Ok(())
@@ -190,6 +202,7 @@ fn stream_reader<R: BufRead>(
 
 fn handle_log_line(
     line: &str,
+    line_number: usize,
     out: &mut dyn Write,
     separator: &str,
     display_delimiter: char,
@@ -197,17 +210,56 @@ fn handle_log_line(
     let matches = find_fix_message_indices(line);
     let colours = palette();
 
-    if matches.is_empty() {
-        writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
+    if !validation_enabled() {
+        if matches.is_empty() {
+            writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
+            return Ok(());
+        }
+
+        let (messages, coloured_line) =
+            extract_messages_and_format(line, &matches, display_delimiter);
+        write!(out, "{coloured_line}")?;
+        write!(out, "{separator}")?;
+
+        for msg in messages {
+            process_fix_message(&msg, out, separator)?;
+        }
         return Ok(());
     }
 
-    let (messages, coloured_line) = extract_messages_and_format(line, &matches, display_delimiter);
-    write!(out, "{coloured_line}")?;
-    write!(out, "{separator}")?;
+    if matches.is_empty() {
+        return Ok(());
+    }
 
-    for msg in messages {
-        process_fix_message(&msg, out, separator)?;
+    let mut invalid = Vec::new();
+    for (start, end) in matches {
+        let msg = &line[start..end];
+        let dict = load_dictionary(msg);
+        let errors = validator::validate_fix_message(msg, &dict);
+        if errors.is_empty() {
+            continue;
+        }
+        let pretty = prettify(msg, &dict);
+        invalid.push((msg.to_string(), pretty, errors));
+    }
+
+    if invalid.is_empty() {
+        return Ok(());
+    }
+
+    let display_line = apply_display_delimiter(line, display_delimiter);
+    writeln!(
+        out,
+        "Line {}: {}{}{}",
+        line_number, colours.line, display_line, colours.reset
+    )?;
+
+    for (_, pretty, errors) in invalid {
+        write!(out, "{pretty}")?;
+        for err in errors {
+            writeln!(out, "  !! {}", err)?;
+        }
+        writeln!(out)?;
     }
 
     Ok(())
@@ -297,4 +349,111 @@ fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::R
 
 pub fn disable_output_colours() {
     disable_colours();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decoder::tag_lookup::load_dictionary;
+    use crate::decoder::validator;
+    use crate::fix;
+    use std::collections::HashMap;
+    use std::io::Cursor;
+
+    const SOH: char = '\u{0001}';
+
+    #[test]
+    fn validation_only_outputs_invalid_messages() {
+        set_validation(true);
+        let obfuscator = fix::create_obfuscator(false);
+        let body = format!("35=0{SOH}34=1{SOH}49=AAA{SOH}52=20240101-00:00:00{SOH}56=BBB{SOH}");
+        let declared_len = body.as_bytes().len() + 1; // intentionally wrong
+        let msg_without_checksum = format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", declared_len, body);
+        let checksum = validator::calculate_checksum(&format!("{msg_without_checksum}10=000{SOH}"));
+        let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
+        let line = format!("{msg}\n");
+        let mut out = Vec::new();
+        stream_reader(
+            BufReader::new(Cursor::new(line)),
+            &mut out,
+            &obfuscator,
+            '|',
+        )
+        .unwrap();
+        set_validation(false);
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.contains("Line 1:"),
+            "line number should be printed for invalid message"
+        );
+        assert!(
+            output.contains("BodyLength mismatch"),
+            "error annotations should be rendered: {output}"
+        );
+        assert!(
+            output.contains('|'),
+            "default display delimiter replacement should appear"
+        );
+    }
+
+    #[test]
+    fn validation_skips_valid_messages() {
+        set_validation(true);
+        let obfuscator = fix::create_obfuscator(false);
+        let lookup = load_dictionary(&format!("8=FIX.4.4{SOH}35=0{SOH}10=000{SOH}"));
+        let order = lookup
+            .message_def("0")
+            .expect("heartbeat definition")
+            .field_order
+            .clone();
+        let mut values = HashMap::new();
+        values.insert(35u32, "0");
+        values.insert(34u32, "1");
+        values.insert(49u32, "AAA");
+        values.insert(52u32, "20240101-00:00:00");
+        values.insert(56u32, "BBB");
+
+        let body = build_body_from_order(&order, &values);
+        let msg_without_checksum =
+            format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body.as_bytes().len(), body);
+        let checksum = validator::calculate_checksum(&format!("{msg_without_checksum}10=000{SOH}"));
+        let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
+        let dict = load_dictionary(&msg);
+        let errs = validator::validate_fix_message(&msg, &dict);
+        assert!(
+            errs.is_empty(),
+            "message used for validation bypass should be valid, got {:?}",
+            errs
+        );
+        let line = format!("{msg}\n");
+        let mut out = Vec::new();
+        stream_reader(
+            BufReader::new(Cursor::new(line)),
+            &mut out,
+            &obfuscator,
+            '|',
+        )
+        .unwrap();
+        set_validation(false);
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(
+            output.trim().is_empty(),
+            "valid messages should not produce output in validation mode"
+        );
+    }
+
+    fn build_body_from_order(order: &[u32], values: &HashMap<u32, &str>) -> String {
+        let mut out = String::new();
+        for tag in order {
+            if *tag == 8 || *tag == 9 || *tag == 10 {
+                continue;
+            }
+            if let Some(val) = values.get(tag) {
+                out.push_str(&format!("{tag}={val}{SOH}"));
+            }
+        }
+        out
+    }
 }

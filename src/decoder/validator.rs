@@ -12,7 +12,7 @@ use std::collections::{HashMap, HashSet};
 /// returning a list of human-readable errors (or empty when valid).
 pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> Vec<String> {
     let fields = parse_fix(msg);
-    let (field_map, seen_tags, duplicates) = build_field_map(&fields);
+    let (field_map, seen_tags, duplicates) = build_field_map(&fields, dict);
     let mut errors = Vec::new();
 
     for dup in duplicates {
@@ -30,6 +30,7 @@ pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> Vec<String> {
         &seen_tags,
         dict,
     ));
+    errors.extend(validate_body_length(msg, &field_map));
     errors.extend(validate_field_enums_and_types(&fields, dict));
     errors.extend(validate_field_ordering(&fields, &msg_def.field_order));
     errors.extend(validate_checksum_field(msg, &field_map));
@@ -37,12 +38,15 @@ pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> Vec<String> {
     errors
 }
 
-fn build_field_map(fields: &[FieldValue]) -> (HashMap<u32, String>, HashSet<u32>, Vec<u32>) {
+fn build_field_map(
+    fields: &[FieldValue],
+    dict: &FixTagLookup,
+) -> (HashMap<u32, String>, HashSet<u32>, Vec<u32>) {
     let mut field_map = HashMap::new();
     let mut seen = HashSet::new();
     let mut duplicates = Vec::new();
     for field in fields {
-        if !seen.insert(field.tag) {
+        if !seen.insert(field.tag) && !dict.is_repeatable(field.tag) {
             duplicates.push(field.tag);
         }
         field_map.insert(field.tag, field.value.clone());
@@ -142,6 +146,25 @@ fn validate_checksum_field(msg: &str, field_map: &HashMap<u32, String>) -> Vec<S
     errors
 }
 
+fn validate_body_length(msg: &str, field_map: &HashMap<u32, String>) -> Vec<String> {
+    let mut errors = Vec::new();
+    match field_map.get(&9) {
+        None => errors.push("Missing required BodyLength tag 9".to_string()),
+        Some(value) => match value.parse::<usize>() {
+            Err(_) => errors.push(format!("Invalid BodyLength value '{}'", value)),
+            Ok(declared) => match compute_actual_body_length(msg) {
+                None => errors.push("Unable to compute BodyLength from message".to_string()),
+                Some(actual) if declared != actual => errors.push(format!(
+                    "BodyLength mismatch: got {}, expected {}",
+                    declared, actual
+                )),
+                _ => {}
+            },
+        },
+    }
+    errors
+}
+
 pub fn calculate_checksum(msg: &str) -> i32 {
     const SOH: &str = "\u{0001}";
     if let Some(idx) = msg.rfind(&(SOH.to_string() + "10=")) {
@@ -182,6 +205,196 @@ fn is_valid_timestamp(value: &str) -> bool {
     ["%Y%m%d-%H:%M:%S", "%Y%m%d-%H:%M:%S%.3f"]
         .iter()
         .any(|fmt| NaiveDateTime::parse_from_str(value, fmt).is_ok())
+}
+
+fn compute_actual_body_length(msg: &str) -> Option<usize> {
+    const SOH: u8 = 0x01;
+    let bytes = msg.as_bytes();
+
+    // find start of 9= field
+    let mut len_pos = None;
+    for i in 0..bytes.len().saturating_sub(1) {
+        if bytes[i] == b'9' && bytes[i + 1] == b'=' {
+            len_pos = Some(i);
+            break;
+        }
+    }
+    let len_pos = len_pos?;
+
+    // find delimiter after 9= value
+    let mut body_start = None;
+    for i in len_pos..bytes.len() {
+        if bytes[i] == SOH {
+            body_start = Some(i + 1);
+            break;
+        }
+    }
+    let body_start = body_start?;
+
+    // find last occurrence of SOH10=
+    let mut checksum_start = None;
+    for i in (0..bytes.len().saturating_sub(3)).rev() {
+        if bytes[i] == SOH && bytes[i + 1] == b'1' && bytes[i + 2] == b'0' && bytes[i + 3] == b'=' {
+            checksum_start = Some(i);
+            break;
+        }
+    }
+    let checksum_start = checksum_start?;
+
+    if checksum_start >= body_start {
+        Some(checksum_start - body_start + 1)
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decoder::schema::{
+        ComponentContainer, ComponentDef, Field, FieldContainer, FieldRef, FixDictionary, GroupDef,
+        Message, MessageContainer, ValuesWrapper,
+    };
+
+    const SOH: &str = "\u{0001}";
+
+    fn field(name: &str, number: u32, field_type: &str) -> Field {
+        Field {
+            name: name.to_string(),
+            number,
+            field_type: field_type.to_string(),
+            values: Vec::new(),
+            values_wrapper: ValuesWrapper::default(),
+        }
+    }
+
+    fn test_lookup() -> FixTagLookup {
+        let dict = FixDictionary {
+            typ: "FIX".to_string(),
+            major: "4".to_string(),
+            minor: "4".to_string(),
+            service_pack: None,
+            fields: FieldContainer {
+                items: vec![
+                    field("BeginString", 8, "STRING"),
+                    field("BodyLength", 9, "LENGTH"),
+                    field("MsgType", 35, "STRING"),
+                    field("CheckSum", 10, "STRING"),
+                    field("NoItems", 100, "NUMINGROUP"),
+                    field("ItemValue", 101, "STRING"),
+                ],
+            },
+            messages: MessageContainer {
+                items: vec![Message {
+                    name: "Test".to_string(),
+                    msg_type: "Z".to_string(),
+                    msg_cat: "app".to_string(),
+                    fields: vec![FieldRef {
+                        name: "NoItems".to_string(),
+                        required: Some("Y".to_string()),
+                    }],
+                    groups: vec![GroupDef {
+                        name: "NoItems".to_string(),
+                        required: Some("Y".to_string()),
+                        fields: vec![FieldRef {
+                            name: "ItemValue".to_string(),
+                            required: Some("N".to_string()),
+                        }],
+                        groups: Vec::new(),
+                        components: Vec::new(),
+                    }],
+                    components: Vec::new(),
+                }],
+            },
+            components: ComponentContainer { items: Vec::new() },
+            header: ComponentDef {
+                name: String::new(),
+                fields: vec![
+                    FieldRef {
+                        name: "BeginString".to_string(),
+                        required: Some("Y".to_string()),
+                    },
+                    FieldRef {
+                        name: "BodyLength".to_string(),
+                        required: Some("Y".to_string()),
+                    },
+                    FieldRef {
+                        name: "MsgType".to_string(),
+                        required: Some("Y".to_string()),
+                    },
+                ],
+                groups: Vec::new(),
+                components: Vec::new(),
+            },
+            trailer: ComponentDef {
+                name: String::new(),
+                fields: vec![FieldRef {
+                    name: "CheckSum".to_string(),
+                    required: Some("Y".to_string()),
+                }],
+                groups: Vec::new(),
+                components: Vec::new(),
+            },
+        };
+
+        FixTagLookup::from_dictionary(&dict)
+    }
+
+    fn build_message(fields: &[(u32, &str)], declared_body_len: Option<usize>) -> String {
+        let mut body = String::new();
+        for (tag, value) in fields {
+            body.push_str(&format!("{tag}={value}{SOH}"));
+        }
+        let body_len = declared_body_len.unwrap_or_else(|| body.as_bytes().len());
+        let mut msg = format!("8=FIX.4.4{SOH}9={:03}{SOH}{}", body_len, body);
+        let checksum = calculate_checksum(&format!("{msg}10=000{SOH}"));
+        msg.push_str(&format!("10={:03}{SOH}", checksum));
+        msg
+    }
+
+    #[test]
+    fn allows_repeating_group_tags() {
+        let dict = test_lookup();
+        let msg = build_message(
+            &[(35, "Z"), (100, "2"), (101, "ALPHA"), (101, "BETA")],
+            None,
+        );
+        let errors = validate_fix_message(&msg, &dict);
+        assert!(
+            errors.is_empty(),
+            "expected no errors for valid repeating group message: {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn detects_body_length_mismatch() {
+        let dict = test_lookup();
+        let msg = build_message(&[(35, "Z"), (100, "1"), (101, "ONLY")], Some(999));
+        let errors = validate_fix_message(&msg, &dict);
+        assert!(
+            errors.iter().any(|e| e.contains("BodyLength mismatch")),
+            "expected body length error, got {:?}",
+            errors
+        );
+    }
+
+    #[test]
+    fn detects_checksum_mismatch() {
+        let dict = test_lookup();
+        let mut msg = build_message(&[(35, "Z"), (100, "1"), (101, "ONLY")], None);
+        // Replace checksum with an incorrect value while keeping length intact.
+        if let Some(pos) = msg.rfind("10=") {
+            msg.truncate(pos + 3);
+            msg.push_str("999\u{0001}");
+        }
+        let errors = validate_fix_message(&msg, &dict);
+        assert!(
+            errors.iter().any(|e| e.contains("Checksum mismatch")),
+            "expected checksum mismatch, got {:?}",
+            errors
+        );
+    }
 }
 
 static MONTH_YEAR_REGEX: Lazy<Regex> =

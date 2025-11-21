@@ -21,6 +21,7 @@ pub struct FixTagLookup {
     enum_map: HashMap<u32, HashMap<String, String>>,
     field_types: HashMap<u32, String>,
     messages: HashMap<String, MessageDef>,
+    repeatable_tags: HashSet<u32>,
 }
 
 impl FixTagLookup {
@@ -56,12 +57,14 @@ impl FixTagLookup {
         component_map.insert(trailer.name.clone(), trailer);
 
         let messages = build_message_defs(&dict.messages, &component_map, &name_to_tag);
+        let repeatable_tags = collect_repeatable_tags(&dict.messages, &component_map, &name_to_tag);
 
         FixTagLookup {
             tag_to_name,
             enum_map,
             field_types,
             messages,
+            repeatable_tags,
         }
     }
 
@@ -88,6 +91,10 @@ impl FixTagLookup {
 
     pub fn message_def(&self, msg_type: &str) -> Option<&MessageDef> {
         self.messages.get(msg_type)
+    }
+
+    pub fn is_repeatable(&self, tag: u32) -> bool {
+        self.repeatable_tags.contains(&tag)
     }
 }
 
@@ -366,6 +373,86 @@ fn append_group_fields(
 fn dedupe(values: &mut Vec<u32>) {
     let mut seen = HashSet::new();
     values.retain(|v| seen.insert(*v));
+}
+
+fn collect_repeatable_tags(
+    messages: &MessageContainer,
+    components: &HashMap<String, ComponentDef>,
+    name_to_tag: &HashMap<String, u32>,
+) -> HashSet<u32> {
+    let mut repeatable = HashSet::new();
+    let mut component_stack = HashSet::new();
+
+    for message in &messages.items {
+        for component in &message.components {
+            collect_component_repeatables(
+                &component.name,
+                components,
+                name_to_tag,
+                &mut repeatable,
+                &mut component_stack,
+            );
+        }
+        for group in &message.groups {
+            collect_group_repeatables(
+                group,
+                components,
+                name_to_tag,
+                &mut repeatable,
+                &mut component_stack,
+            );
+        }
+    }
+
+    repeatable
+}
+
+fn collect_component_repeatables(
+    name: &str,
+    components: &HashMap<String, ComponentDef>,
+    name_to_tag: &HashMap<String, u32>,
+    repeatable: &mut HashSet<u32>,
+    stack: &mut HashSet<String>,
+) {
+    if !stack.insert(name.to_string()) {
+        return;
+    }
+    let Some(comp) = components.get(name) else {
+        stack.remove(name);
+        return;
+    };
+
+    for group in &comp.groups {
+        collect_group_repeatables(group, components, name_to_tag, repeatable, stack);
+    }
+    for child in &comp.components {
+        collect_component_repeatables(&child.name, components, name_to_tag, repeatable, stack);
+    }
+
+    stack.remove(name);
+}
+
+fn collect_group_repeatables(
+    group: &GroupDef,
+    components: &HashMap<String, ComponentDef>,
+    name_to_tag: &HashMap<String, u32>,
+    repeatable: &mut HashSet<u32>,
+    stack: &mut HashSet<String>,
+) {
+    if let Some(tag) = name_to_tag.get(&group.name) {
+        repeatable.insert(*tag);
+    }
+    for field in &group.fields {
+        if let Some(tag) = name_to_tag.get(&field.name) {
+            repeatable.insert(*tag);
+        }
+    }
+    for comp in &group.components {
+        collect_component_repeatables(&comp.name, components, name_to_tag, repeatable, stack);
+    }
+    for sub in &group.groups {
+        collect_group_repeatables(sub, components, name_to_tag, repeatable, stack);
+    }
 }
 
 #[cfg(test)]
