@@ -49,13 +49,21 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
             ${{ runner.os }}-cargo-
+      - name: Ensure make is installed (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y make
+      - name: Ensure make is installed (Windows)
+        if: runner.os == 'Windows'
+        run: choco install make
       - name: Install target dependencies
         if: ${{ matrix.setup != '' }}
         run: ${{ matrix.setup }}
       - name: Build release
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
-          ./ci.sh setup-environment
-          RUSTFLAGS="${{ matrix.rustflags }}" cargo build --release --target ${{ matrix.target }}
+          make prepare
+          cargo build --release --target ${{ matrix.target }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -84,8 +92,11 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
+      - name: Ensure make is installed (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y make
       - name: Run scan and coverage
-        run: ./ci.sh scan coverage
+        run: make scan coverage
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
