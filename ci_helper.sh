@@ -30,7 +30,8 @@ function cmd_setup_environment() {
   fi
   if ! command -v cargo-llvm-cov >/dev/null 2>&1; then
     log ">> Installing cargo-llvm-cov"
-    cargo install cargo-llvm-cov --locked --quiet
+    # Avoid inheriting target-specific RUSTFLAGS (e.g., musl + crt-static) that break proc-macro builds.
+    RUSTFLAGS="" cargo install cargo-llvm-cov --locked --quiet
   fi
   setup_done=true
 }

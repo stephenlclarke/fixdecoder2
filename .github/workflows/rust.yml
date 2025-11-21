@@ -18,7 +18,6 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            rustflags: "-C target-feature=+crt-static"
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
           - os: macos-14
@@ -59,9 +58,10 @@ jobs:
         if: ${{ matrix.setup != '' }}
         run: ${{ matrix.setup }}
       - name: Build release
-        env:
-          RUSTFLAGS: ${{ matrix.rustflags }}
         run: |
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
+          fi
           make prepare
           cargo build --release --target ${{ matrix.target }}
       - name: Upload artifact
