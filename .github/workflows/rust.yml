@@ -223,16 +223,21 @@ jobs:
       - name: Prepare tooling (git + cargo)
         if: env.SONAR_TOKEN != ''
         run: |
+          # Try common package managers in order: apt-get, apk, dnf, yum
+          install_cmd=""
           if command -v apt-get >/dev/null 2>&1; then
-            apt-get update
-            apt-get install -y git curl ca-certificates
+            install_cmd="apt-get update && apt-get install -y git curl ca-certificates"
           elif command -v apk >/dev/null 2>&1; then
-            apk update
-            apk add --no-cache git curl ca-certificates bash
+            install_cmd="apk update && apk add --no-cache git curl ca-certificates bash"
+          elif command -v dnf >/dev/null 2>&1; then
+            install_cmd="dnf install -y git curl ca-certificates"
+          elif command -v yum >/dev/null 2>&1; then
+            install_cmd="yum install -y git curl ca-certificates"
           else
-            echo "No supported package manager found (apt-get/apk)." >&2
+            echo "No supported package manager found (apt-get/apk/dnf/yum)." >&2
             exit 1
           fi
+          eval "${install_cmd}"
 
           export RUSTUP_HOME=/tmp/rustup
           export CARGO_HOME=/tmp/cargo
