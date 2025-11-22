@@ -218,6 +218,14 @@ jobs:
       - name: Skip Sonar (missing token)
         if: env.SONAR_TOKEN == ''
         run: echo "SONAR_TOKEN not set; skipping Sonar analysis."
+      - name: Install git inside container
+        if: env.SONAR_TOKEN != ''
+        run: |
+          if command -v git >/dev/null 2>&1; then
+            exit 0
+          fi
+          apt-get update
+          apt-get install -y git
       - uses: actions/checkout@v4
         if: env.SONAR_TOKEN != ''
       - name: Download coverage artifact
