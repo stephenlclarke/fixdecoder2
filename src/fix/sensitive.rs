@@ -15,6 +15,7 @@
 use once_cell::sync::Lazy;
 use std::collections::BTreeMap;
 
+#[rustfmt::skip]
 pub static SENSITIVE_TAG_NAMES: Lazy<BTreeMap<u32, &'static str>> = Lazy::new(|| {
     let mut map = BTreeMap::new();
     map.insert(1, "Account");
