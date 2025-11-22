@@ -223,8 +223,16 @@ jobs:
       - name: Prepare tooling (git + cargo)
         if: env.SONAR_TOKEN != ''
         run: |
-          apt-get update
-          apt-get install -y git curl ca-certificates
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update
+            apt-get install -y git curl ca-certificates
+          elif command -v apk >/dev/null 2>&1; then
+            apk update
+            apk add --no-cache git curl ca-certificates bash
+          else
+            echo "No supported package manager found (apt-get/apk)." >&2
+            exit 1
+          fi
 
           export RUSTUP_HOME=/tmp/rustup
           export CARGO_HOME=/tmp/cargo
