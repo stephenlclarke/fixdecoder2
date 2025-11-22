@@ -31,9 +31,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
+        id: lockfile-hash
         shell: bash
         run: |
-          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
+          python_cmd="$(command -v python3 || command -v python || true)"
+          if [[ -z "${python_cmd}" ]]; then
+            echo "Python is required to compute the lockfile hash." >&2
+            exit 1
+          fi
+          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
+          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
+          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -51,7 +59,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-aarch64-apple-darwin-cargo-${{ env.CARGO_LOCK_HASH }}
+          key: ${{ runner.os }}-aarch64-apple-darwin-cargo-${{ steps.lockfile-hash.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-aarch64-apple-darwin-cargo-
             ${{ runner.os }}-cargo-
@@ -89,9 +97,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
+        id: lockfile-hash
         shell: bash
         run: |
-          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
+          python_cmd="$(command -v python3 || command -v python || true)"
+          if [[ -z "${python_cmd}" ]]; then
+            echo "Python is required to compute the lockfile hash." >&2
+            exit 1
+          fi
+          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
+          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
+          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -109,7 +125,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.CARGO_LOCK_HASH }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
             ${{ runner.os }}-cargo-
@@ -148,9 +164,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
+        id: lockfile-hash
         shell: bash
         run: |
-          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
+          python_cmd="$(command -v python3 || command -v python || true)"
+          if [[ -z "${python_cmd}" ]]; then
+            echo "Python is required to compute the lockfile hash." >&2
+            exit 1
+          fi
+          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
+          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
+          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -167,7 +191,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ env.CARGO_LOCK_HASH }}
+          key: ${{ runner.os }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Ensure make is installed (Linux)
