@@ -100,6 +100,7 @@ jobs:
     name: Lint & Coverage
     runs-on: ubuntu-latest
     needs: build
+    if: github.event_name == 'pull_request'
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
@@ -137,6 +138,7 @@ jobs:
     name: Sonar (coverage import)
     runs-on: ubuntu-latest
     needs: quality
+    if: github.event_name == 'pull_request'
     container: sonarsource/sonar-scanner-cli:5.0.1.3006
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
