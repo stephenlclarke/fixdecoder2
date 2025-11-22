@@ -41,47 +41,51 @@ function ensure_sonar_scanner() {
     return
   fi
   log ">> Installing sonar-scanner CLI locally"
-  local version="5.0.1.3006"
   local tools_dir="${ROOT_DIR}/target/tools"
-  local archive
-  local urls=()
   local os="$(uname -s | tr '[:upper:]' '[:lower:]')"
 
   mkdir -p "${tools_dir}"
 
-  case "${os}" in
-    linux*)
-      archive="/tmp/sonar-scanner-${version}-linux-x64.zip"
-      urls+=(
-        "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-linux-x64.zip"
-        "https://sonarsource.bintray.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-linux-x64.zip"
-      )
-      ;;
-    darwin*)
-      archive="/tmp/sonar-scanner-${version}-macosx.zip"
-      urls+=(
-        "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-macosx.zip"
-        "https://sonarsource.bintray.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-macosx.zip"
-      )
-      ;;
-    msys*|mingw*|cygwin*)
-      archive="/tmp/sonar-scanner-${version}-windows.zip"
-      urls+=(
-        "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-windows.zip"
-        "https://sonarsource.bintray.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-windows.zip"
-      )
-      ;;
-    *)
-      warn "Unsupported OS for auto-installing sonar-scanner (${os}); please install manually."
-      return 1
-      ;;
-  esac
-
+  # Try a set of known versions (newest first) because tags may disappear.
+  local versions=("6.2.0.4872" "6.1.0.4477" "6.0.0.4380" "5.0.1.3006")
   local downloaded=""
-  for url in "${urls[@]}"; do
-    log "   attempting download: ${url}"
-    if curl -fsSL -o "${archive}" "${url}"; then
-      downloaded="${archive}"
+
+  for version in "${versions[@]}"; do
+    local archive urls=()
+    case "${os}" in
+      linux*)
+        archive="/tmp/sonar-scanner-${version}-linux-x64.zip"
+        urls+=(
+          "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-linux-x64.zip"
+        )
+        ;;
+      darwin*)
+        archive="/tmp/sonar-scanner-${version}-macosx.zip"
+        urls+=(
+          "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-macosx.zip"
+        )
+        ;;
+      msys*|mingw*|cygwin*)
+        archive="/tmp/sonar-scanner-${version}-windows.zip"
+        urls+=(
+          "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${version}-windows.zip"
+        )
+        ;;
+      *)
+        warn "Unsupported OS for auto-installing sonar-scanner (${os}); please install manually."
+        return 1
+        ;;
+    esac
+
+    for url in "${urls[@]}"; do
+      log "   attempting download: ${url}"
+      if curl -fsSL -o "${archive}" "${url}"; then
+        downloaded="${archive}"
+        break
+      fi
+    done
+
+    if [[ -n "${downloaded}" ]]; then
       break
     fi
   done
