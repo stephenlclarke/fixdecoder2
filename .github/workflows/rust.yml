@@ -47,6 +47,9 @@ jobs:
     needs: dictionaries
     steps:
       - uses: actions/checkout@v4
+      - name: Compute lockfile hash
+        shell: bash
+        run: echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -64,7 +67,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ env.CARGO_LOCK_HASH }}
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
             ${{ runner.os }}-cargo-
@@ -101,6 +104,9 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Compute lockfile hash
+        shell: bash
+        run: echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -112,7 +118,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ env.CARGO_LOCK_HASH }}
           restore-keys: |
             ${{ runner.os }}-cargo-
       - name: Ensure make is installed (Linux)
