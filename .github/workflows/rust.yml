@@ -32,7 +32,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
         shell: bash
-        run: echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        run: |
+          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -89,7 +90,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
         shell: bash
-        run: echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        run: |
+          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -147,7 +149,8 @@ jobs:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
         shell: bash
-        run: echo "CARGO_LOCK_HASH=$(sha256sum Cargo.lock | cut -d' ' -f1)" >> "$GITHUB_ENV"
+        run: |
+          node -e "const {createHash} = require('crypto'); const {readFileSync, appendFileSync} = require('fs'); const hash = createHash('sha256').update(readFileSync('Cargo.lock')).digest('hex'); appendFileSync(process.env.GITHUB_ENV, `CARGO_LOCK_HASH=${hash}\n`);"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
