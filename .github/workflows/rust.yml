@@ -17,7 +17,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Download FIX XML dictionaries
         shell: bash
-        run: bash -lc 'source ci_helper.sh && download_fix_specs'
+        run: bash -lc 'source ci/ci_helper.sh && download_fix_specs'
       - name: Upload FIX specs artifact
         uses: actions/upload-artifact@v4
         with:
@@ -34,14 +34,14 @@ jobs:
         id: lockfile-hash
         shell: bash
         run: |
-          python_cmd="$(command -v python3 || command -v python || true)"
-          if [[ -z "${python_cmd}" ]]; then
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ci/compute_lockfile_hash.py Cargo.lock
+          elif command -v python >/dev/null 2>&1; then
+            python ci/compute_lockfile_hash.py Cargo.lock
+          else
             echo "Python is required to compute the lockfile hash." >&2
             exit 1
           fi
-          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
-          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
-          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -100,14 +100,14 @@ jobs:
         id: lockfile-hash
         shell: bash
         run: |
-          python_cmd="$(command -v python3 || command -v python || true)"
-          if [[ -z "${python_cmd}" ]]; then
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ci/compute_lockfile_hash.py Cargo.lock
+          elif command -v python >/dev/null 2>&1; then
+            python ci/compute_lockfile_hash.py Cargo.lock
+          else
             echo "Python is required to compute the lockfile hash." >&2
             exit 1
           fi
-          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
-          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
-          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -167,14 +167,14 @@ jobs:
         id: lockfile-hash
         shell: bash
         run: |
-          python_cmd="$(command -v python3 || command -v python || true)"
-          if [[ -z "${python_cmd}" ]]; then
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ci/compute_lockfile_hash.py Cargo.lock
+          elif command -v python >/dev/null 2>&1; then
+            python ci/compute_lockfile_hash.py Cargo.lock
+          else
             echo "Python is required to compute the lockfile hash." >&2
             exit 1
           fi
-          hash_value="$(${python_cmd} -c 'import hashlib, pathlib; print(hashlib.sha256(pathlib.Path(\"Cargo.lock\").read_bytes()).hexdigest())')"
-          printf 'hash=%s\n' "${hash_value}" >> "${GITHUB_OUTPUT}"
-          echo "hash=${hash_value}"
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:

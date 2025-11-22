@@ -1,7 +1,7 @@
-# Makefile — invokes helper functions from ./ci_helper.sh for common tasks
+# Makefile — invokes helper functions from ./ci/ci_helper.sh for common tasks
 
 SHELL := /bin/bash
-CI_SCRIPT := ./ci_helper.sh
+CI_SCRIPT := ./ci/ci_helper.sh
 
 .PHONY: setup-environment prepare build build-release scan coverage sonar clean help
 
