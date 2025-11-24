@@ -48,13 +48,12 @@ release:
 	fi; \
 	ver=$$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
 	if [ -z "$$ver" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
-	next=$$($$py -c "import sys; maj,mi,pa = map(int, sys.argv[1].split('.')); print(f'{maj}.{mi}.{pa+1}')" "$$ver"); \
+	next="$$ver"; \
+	while git rev-parse "v$${next}" >/dev/null 2>&1; do \
+		next=$$($$py -c "import sys; maj,mi,pa = map(int, sys.argv[1].split('.')); print(f'{maj}.{mi}.{pa+1}')" "$${next}"); \
+	done; \
 	if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
-		exit 1; \
-	fi; \
-	if git rev-parse "v$$next" >/dev/null 2>&1; then \
-		echo "Tag v$$next already exists; aborting." >&2; \
 		exit 1; \
 	fi; \
 	$$py -c "import sys,re,pathlib; cur,new=sys.argv[1:3]; path=pathlib.Path('\"'\"'Cargo.toml'\"'\"'); text=path.read_text(); text=re.sub(r'^version\\s*=\\s*\"'\"''\"'\"'+re.escape(cur)+r'\"'\"''\"'\"'', f'version = \"'\"'\"{new}\"'\"'\"', text, count=1, flags=re.M); path.write_text(text)" "$$ver" "$$next"; \

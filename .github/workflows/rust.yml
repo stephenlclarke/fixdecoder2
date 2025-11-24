@@ -119,8 +119,6 @@ jobs:
     needs: dictionaries
     # Run on branch pushes for fast feedback (debug build + coverage); skip tags.
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
@@ -172,11 +170,6 @@ jobs:
     needs: quality
     # Run for branch pushes (not tags) when a token is available.
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    container:
-      image: sonarsource/sonar-scanner-cli:latest
-      options: --user root
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Download coverage artifact
@@ -185,7 +178,12 @@ jobs:
           name: coverage-xml
           path: target/coverage
       - name: Run sonar-scanner
-        run: sonar-scanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        uses: sonarsource/sonarcloud-github-action@v2.1.0
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
 
   release:
     name: Publish Release
