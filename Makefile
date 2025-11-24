@@ -62,7 +62,9 @@ release:
 	git add Cargo.toml; \
 	git commit -m "chore(release): v$$next"; \
 	git tag -a "v$$next" -m "Release v$$next"; \
-	echo "Created tag v$$next"
+	git push origin HEAD; \
+	git push origin "v$$next"; \
+	echo "Created and pushed tag v$$next"
 
 clean:
 	@cargo clean
