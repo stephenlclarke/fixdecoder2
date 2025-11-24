@@ -25,58 +25,6 @@ jobs:
           name: fix-specs
           path: resources
 
-  build:
-    name: Build release (aarch64-apple-darwin)
-    runs-on: macos-latest
-    needs: dictionaries
-    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compute lockfile hash
-        id: lockfile-hash
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then
-            python3 ci/compute_lockfile_hash.py Cargo.lock
-          elif command -v python >/dev/null 2>&1; then
-            python ci/compute_lockfile_hash.py Cargo.lock
-          else
-            echo "Python is required to compute the lockfile hash." >&2
-            exit 1
-          fi
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt,llvm-tools-preview
-          targets: aarch64-apple-darwin
-      - name: Download FIX specs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: fix-specs
-          path: resources
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-aarch64-apple-darwin-cargo-${{ steps.lockfile-hash.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-aarch64-apple-darwin-cargo-
-            ${{ runner.os }}-cargo-
-      - name: Build release (fast path)
-        run: |
-          make prepare
-          cargo build --release --target aarch64-apple-darwin
-        env:
-          RUSTFLAGS: ""
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fixdecoder-aarch64-apple-darwin
-          path: target/aarch64-apple-darwin/release/fixdecoder
-
   build-matrix:
     name: Build release (${{ matrix.target }})
     strategy:
@@ -94,7 +42,7 @@ jobs:
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
     runs-on: ${{ matrix.os }}
-    needs: [dictionaries, build]
+    needs: [quality]
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
@@ -279,7 +227,7 @@ jobs:
   release:
     name: Publish Release
     runs-on: ubuntu-latest
-    needs: [build, build-matrix]
+    needs: [build-matrix]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
