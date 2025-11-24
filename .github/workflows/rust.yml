@@ -160,12 +160,23 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y make
       - name: Run scan and coverage
         run: make scan coverage
+      - name: Run cargo-audit (JSON) and convert to Sonar issues
+        run: |
+          mkdir -p target/coverage
+          cargo audit --json > target/coverage/rustsec.json || true
+          python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: target/coverage/coverage.xml
           if-no-files-found: error
+      - name: Upload sonar issues artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-generic-issues
+          path: target/coverage/sonar-generic-issues.json
+          if-no-files-found: warn
 
   sonar:
     name: Sonar (coverage import)
@@ -180,12 +191,19 @@ jobs:
         with:
           name: coverage-xml
           path: target/coverage
+      - name: Download sonar issues artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sonar-generic-issues
+          path: target/coverage
       - name: Run sonar-scanner
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         uses: sonarsource/sonarcloud-github-action@v2.1.0
         with:
           args: >
             -Dsonar.host.url=https://sonarcloud.io
-            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
+            -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json
 
   release:
     name: Publish Release
