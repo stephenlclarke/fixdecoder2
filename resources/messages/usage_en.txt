@@ -1,0 +1,26 @@
+Command line option examples:
+  Query FIX dictionary contents by FIX Message Name or MsgType:
+    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
+
+    $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
+    $ fixdecoder --message=D --verbose --column --header --trailer
+  
+  Query FIX dictionary contents by FIX Tag number:
+    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
+
+    $ fixdecoder --tag=44 --verbose --column
+    
+  Query FIX dictionary contents by FIX Component Name:
+    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
+
+    $ fixdecoder --component=Instrument --verbose --column
+
+  Show summary information about available FIX dictionaries:
+    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
+
+    $ fixdecoder --info
+
+  Prettify FIX log files with optional validation and obfuscation if output is piped then colour is disabled by default but can be forced on with --colour=yes:
+    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--delimiter=CHAR] [file1.log file2.log ...]
+
+    $ fixdecoder --validate --secret --delimiter='|' logs/fix.log
