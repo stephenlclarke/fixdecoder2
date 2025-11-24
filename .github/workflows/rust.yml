@@ -13,6 +13,7 @@ jobs:
   dictionaries:
     name: Prepare FIX specs
     runs-on: ubuntu-latest
+    # Specs are needed for all flows (push and PR).
     steps:
       - uses: actions/checkout@v4
       - name: Download FIX XML dictionaries
@@ -28,6 +29,7 @@ jobs:
     name: Build release (aarch64-apple-darwin)
     runs-on: macos-latest
     needs: dictionaries
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
@@ -93,7 +95,7 @@ jobs:
             artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
     runs-on: ${{ matrix.os }}
     needs: [dictionaries, build]
-    if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
@@ -157,8 +159,9 @@ jobs:
   quality:
     name: Lint & Coverage
     runs-on: ubuntu-latest
-    needs: build
-    if: github.event_name == 'pull_request'
+    needs: dictionaries
+    # Run on all pushes and PRs for fast feedback (debug build + coverage).
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     env:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
@@ -210,7 +213,8 @@ jobs:
     name: Sonar (coverage import)
     runs-on: ubuntu-latest
     needs: quality
-    if: github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork
+    # Run for PRs and main pushes when a token is present.
+    if: (github.event_name == 'pull_request' && !github.event.pull_request.head.repo.fork) || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     container:
       image: sonarsource/sonar-scanner-cli:latest
       options: --user root
