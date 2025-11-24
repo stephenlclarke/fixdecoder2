@@ -56,7 +56,7 @@ release:
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
 	fi; \
-	$$py - "$$ver" "$$next" <<'PY' || exit 1
+		$$py - "$$ver" "$$next" <<'PY' || exit 1
 import pathlib, re, sys
 cur, new = sys.argv[1:3]
 path = pathlib.Path("Cargo.toml")
