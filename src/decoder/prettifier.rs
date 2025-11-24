@@ -78,9 +78,9 @@ pub fn prettify_with_report(
 }
 
 /// Bucket each field by tag so repeat occurrences can be emitted in order.
-fn bucket_fields<'a>(
-    fields: &'a [FieldValue],
-) -> std::collections::HashMap<u32, std::collections::VecDeque<&'a FieldValue>> {
+fn bucket_fields(
+    fields: &[FieldValue],
+) -> std::collections::HashMap<u32, std::collections::VecDeque<&FieldValue>> {
     use std::collections::{HashMap, VecDeque};
     let mut buckets: HashMap<u32, VecDeque<&FieldValue>> = HashMap::new();
     for field in fields {
@@ -645,7 +645,7 @@ mod tests {
         let pretty = prettify_with_report(&msg, &dict, None);
         let tags: Vec<u32> = pretty
             .lines()
-            .filter_map(|line| line.trim().split_whitespace().next())
+            .filter_map(|line| line.split_whitespace().next())
             .filter_map(|tag| tag.parse::<u32>().ok())
             .collect();
 
