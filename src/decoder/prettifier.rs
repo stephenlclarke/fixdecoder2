@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Steve Clarke <stephenlclarke@mac.com> - https://xyzzy.tools
 
 use crate::decoder::colours::{disable_colours, palette};
-use crate::decoder::fixparser::parse_fix;
+use crate::decoder::fixparser::{FieldValue, parse_fix};
 use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary};
 use crate::decoder::validator;
 use crate::fix;
@@ -33,11 +33,14 @@ pub fn set_validation(enabled: bool) {
     VALIDATION_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
+/// Returns whether validation is currently enabled for prettification.
 pub fn validation_enabled() -> bool {
     VALIDATION_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Render a single FIX message into a human-friendly string using the provided dictionary.
+/// When a validation report is supplied, tag-level errors are annotated inline and missing
+/// required fields are surfaced in the output.
 pub fn prettify_with_report(
     msg: &str,
     dict: &FixTagLookup,
@@ -46,43 +49,10 @@ pub fn prettify_with_report(
     let colours = palette();
     let mut output = String::new();
     let fields = parse_fix(msg);
-    let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
-    let message_def: Option<MessageDef> = msg_type
-        .as_deref()
-        .and_then(|mt| dict.message_def(mt).cloned());
-
-    use std::collections::VecDeque;
-    let mut tag_buckets: std::collections::HashMap<u32, VecDeque<&_>> =
-        std::collections::HashMap::new();
-    for field in &fields {
-        tag_buckets.entry(field.tag).or_default().push_back(field);
-    }
-
-    let mut ordered_tags: Vec<u32> = match message_def.as_ref() {
-        Some(def) => def.field_order.clone(),
-        None => {
-            // Best-effort ordering when MsgType is missing: emit header tags in canonical order first, then existing fields.
-            let mut base = vec![8, 9, 35];
-            for f in &fields {
-                if !base.contains(&f.tag) {
-                    base.push(f.tag);
-                }
-            }
-            base
-        }
-    };
-
     let annotations = report.map(|r| &r.tag_errors);
 
-    if let Some(ann) = annotations {
-        let mut missing: Vec<u32> = ann
-            .keys()
-            .filter(|tag| !ordered_tags.contains(tag))
-            .copied()
-            .collect();
-        missing.sort();
-        ordered_tags.extend(missing);
-    }
+    let mut tag_buckets = bucket_fields(&fields);
+    let ordered_tags = build_tag_order(&fields, dict, annotations);
 
     for tag in ordered_tags {
         if let Some(bucket) = tag_buckets.get_mut(&tag) {
@@ -105,6 +75,58 @@ pub fn prettify_with_report(
     }
 
     output
+}
+
+/// Bucket each field by tag so repeat occurrences can be emitted in order.
+fn bucket_fields<'a>(
+    fields: &'a [FieldValue],
+) -> std::collections::HashMap<u32, std::collections::VecDeque<&'a FieldValue>> {
+    use std::collections::{HashMap, VecDeque};
+    let mut buckets: HashMap<u32, VecDeque<&FieldValue>> = HashMap::new();
+    for field in fields {
+        buckets.entry(field.tag).or_default().push_back(field);
+    }
+    buckets
+}
+
+/// Build the emission order of tags using the message definition when known, falling back
+/// to a header-first order when MsgType is absent, and appending tags referenced in
+/// validation annotations.
+fn build_tag_order(
+    fields: &[FieldValue],
+    dict: &FixTagLookup,
+    annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
+) -> Vec<u32> {
+    let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
+    let message_def: Option<MessageDef> = msg_type
+        .as_deref()
+        .and_then(|mt| dict.message_def(mt).cloned());
+
+    let mut ordered_tags: Vec<u32> = match message_def.as_ref() {
+        Some(def) => def.field_order.clone(),
+        None => {
+            // Best-effort ordering when MsgType is missing: emit header tags in canonical order first, then existing fields.
+            let mut base = vec![8, 9, 35];
+            for f in fields {
+                if !base.contains(&f.tag) {
+                    base.push(f.tag);
+                }
+            }
+            base
+        }
+    };
+
+    if let Some(ann) = annotations {
+        let mut missing: Vec<u32> = ann
+            .keys()
+            .filter(|tag| !ordered_tags.contains(tag))
+            .copied()
+            .collect();
+        missing.sort();
+        ordered_tags.extend(missing);
+    }
+
+    ordered_tags
 }
 
 pub fn prettify_files(
@@ -136,6 +158,7 @@ pub fn prettify_files(
     if had_error { 1 } else { 0 }
 }
 
+/// Write a single field line, including optional enum descriptions and validation errors.
 fn write_field_line(
     output: &mut String,
     dict: &FixTagLookup,
@@ -179,6 +202,7 @@ fn write_field_line(
     output.push('\n');
 }
 
+/// Write a placeholder line for a missing field, showing validation errors when present.
 fn write_missing_line(
     output: &mut String,
     dict: &FixTagLookup,
@@ -206,6 +230,7 @@ fn write_missing_line(
     ));
 }
 
+/// Handle decoding from stdin (used when no file paths are provided).
 fn handle_stdin(
     out: &mut dyn Write,
     err_out: &mut dyn Write,
@@ -235,6 +260,7 @@ fn handle_stdin(
     0
 }
 
+/// Handle decoding from a single file path, printing progress when validation is disabled.
 fn handle_file(
     path: &str,
     out: &mut dyn Write,
@@ -268,6 +294,7 @@ fn handle_file(
     Ok(())
 }
 
+/// Stream lines from a reader, emitting formatted FIX messages (and optionally validation output).
 fn stream_reader<R: BufRead>(
     mut reader: R,
     out: &mut dyn Write,
@@ -306,6 +333,7 @@ fn stream_reader<R: BufRead>(
     Ok(())
 }
 
+/// Process a single log line, extracting FIX messages and rendering prettified output.
 fn handle_log_line(
     line: &str,
     line_number: usize,
@@ -368,6 +396,7 @@ fn handle_log_line(
     Ok(())
 }
 
+/// Locate FIX message spans within a line using a permissive regex.
 fn find_fix_message_indices(line: &str) -> Vec<(usize, usize)> {
     FIX_REGEX
         .find_iter(line)
@@ -375,6 +404,7 @@ fn find_fix_message_indices(line: &str) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Extract FIX messages from a line while also returning a coloured representation.
 fn extract_messages_and_format(
     line: &str,
     matches: &[(usize, usize)],
@@ -413,6 +443,7 @@ fn extract_messages_and_format(
     (fix_messages, output)
 }
 
+/// Replace SOH display delimiters for human-readable rendering without mutating inputs.
 fn apply_display_delimiter<'a>(text: &'a str, delimiter: char) -> Cow<'a, str> {
     const SOH: char = '\u{0001}';
     if delimiter == SOH || !text.contains(SOH) {
@@ -430,6 +461,7 @@ fn apply_display_delimiter<'a>(text: &'a str, delimiter: char) -> Cow<'a, str> {
     }
 }
 
+/// Render a single FIX message (and validation errors when enabled) to the output stream.
 fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::Result<()> {
     let dict = load_dictionary(msg);
     let pretty = prettify_with_report(msg, &dict, None);
@@ -573,6 +605,61 @@ mod tests {
         assert!(
             output.contains("35 (MsgType): Missing"),
             "missing tag should be shown in decoded output: {output}"
+        );
+    }
+
+    #[test]
+    fn prettify_includes_missing_tag_annotations_once() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+        let msg = format!("8=FIX.4.4{SOH}9=005{SOH}35=0{SOH}10=000{SOH}");
+        let dict = load_dictionary(&msg);
+
+        let mut report = validator::ValidationReport::default();
+        report
+            .tag_errors
+            .insert(34, vec!["missing sequence".to_string()]);
+
+        let pretty = prettify_with_report(&msg, &dict, Some(&report));
+        let lines: Vec<&str> = pretty.lines().collect();
+        let missing_lines: Vec<&str> = lines
+            .iter()
+            .copied()
+            .filter(|l| l.contains("34") && l.contains("missing sequence"))
+            .collect();
+
+        assert_eq!(
+            missing_lines.len(),
+            1,
+            "missing tag 34 should appear exactly once: {pretty}"
+        );
+    }
+
+    #[test]
+    fn prettify_orders_without_msg_type_header_first() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+        let msg = format!("8=FIX.4.4{SOH}9=005{SOH}55=IBM{SOH}10=999{SOH}");
+        let dict = load_dictionary(&msg);
+
+        let pretty = prettify_with_report(&msg, &dict, None);
+        let tags: Vec<u32> = pretty
+            .lines()
+            .filter_map(|line| line.trim().split_whitespace().next())
+            .filter_map(|tag| tag.parse::<u32>().ok())
+            .collect();
+
+        assert!(
+            tags.starts_with(&[8, 9]),
+            "header tags should lead when MsgType is missing: {:?}",
+            tags
+        );
+        let pos_55 = tags.iter().position(|t| *t == 55);
+        let pos_10 = tags.iter().position(|t| *t == 10);
+        assert!(
+            pos_55 < pos_10,
+            "body tag 55 should appear before checksum: {:?}",
+            tags
         );
     }
 
