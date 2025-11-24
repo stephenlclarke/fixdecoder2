@@ -199,6 +199,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install Rust toolchain for Sonar (cargo/clippy)
+        run: |
+          if ! command -v cargo >/dev/null 2>&1; then
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
+          if command -v rustup >/dev/null 2>&1; then
+            rustup component add clippy >/dev/null 2>&1 || true
+          fi
+
       - name: Download coverage artifact
         uses: actions/download-artifact@v4
         with:
