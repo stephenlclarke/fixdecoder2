@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any, Dict, List
 
 
-SEVERITY_MAP = {
+SEVERITY_MAP: Dict[str, str] = {
     "critical": "CRITICAL",
     "high": "MAJOR",
     "medium": "MAJOR",
@@ -22,14 +23,16 @@ SEVERITY_MAP = {
 }
 
 
-def load_input(path: Path) -> dict:
+def load_input(path: Path) -> Dict[str, Any]:
+    """Load and parse a JSON file into a dictionary."""
     with path.open(encoding="utf-8") as fh:
         return json.load(fh)
 
 
-def map_issue(vuln: dict) -> dict:
-    advisory = vuln.get("advisory", {})
-    package = vuln.get("package", {})
+def map_issue(vuln: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a RustSec vulnerability entry into a Sonar generic issue."""
+    advisory: Dict[str, Any] = vuln.get("advisory", {})
+    package: Dict[str, Any] = vuln.get("package", {})
 
     advisory_id = advisory.get("id", "UNKNOWN")
     title = advisory.get("title", "RustSec advisory")
@@ -59,15 +62,17 @@ def map_issue(vuln: dict) -> dict:
 
 
 def convert(input_path: Path, output_path: Path) -> None:
+    """Convert a cargo-audit JSON report into Sonar generic issues JSON."""
     data = load_input(input_path)
-    vulns = data.get("vulnerabilities", {}).get("list", [])
-    issues = [map_issue(v) for v in vulns]
+    vulns: List[Dict[str, Any]] = data.get("vulnerabilities", {}).get("list", [])
+    issues: List[Dict[str, Any]] = [map_issue(v) for v in vulns]
     output = {"issues": issues}
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(output, indent=2), encoding="utf-8")
 
 
 def main() -> int:
+    """Entrypoint: convert input/output paths from argv into a Sonar issues file."""
     if len(sys.argv) != 3:
         print("usage: convert_rustsec_to_sonar.py <input.json> <output.json>", file=sys.stderr)
         return 1
@@ -77,7 +82,7 @@ def main() -> int:
 
     try:
         convert(inp, out)
-    except Exception as exc:  # pragma: no cover - defensive guard
+    except (OSError, ValueError) as exc:
         print(f"failed to convert RustSec report: {exc}", file=sys.stderr)
         return 1
     return 0
