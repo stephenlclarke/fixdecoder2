@@ -61,12 +61,18 @@ fn git_url() -> &'static str {
     option_env!("FIXDECODER_GIT_URL").unwrap_or("https://github.com/stephenlclarke/fixdecoder2.git")
 }
 
+/// Determine the rustc version baked in at build time.
+fn rust_version() -> &'static str {
+    option_env!("RUSTC_VERSION").unwrap_or("unknown")
+}
+
 /// Human-friendly version banner including branch and commit.
 fn version_string() -> String {
     format!(
-        "fixdecoder {VERSION} (branch:{}, commit:{})",
+        "fixdecoder {VERSION} (branch:{}, commit:{}) [rust:{}]",
         branch(),
-        sha()
+        sha(),
+        rust_version()
     )
 }
 
@@ -92,7 +98,7 @@ fn main() {
 /// and finally drive the prettifier.  Everything user-facing goes through
 /// here, so the structure favours clarity over cleverness.
 fn run() -> Result<i32> {
-    println!("{}\n", version_string());
+    println!("{}", version_string());
 
     let cmd = build_cli();
     let matches = match cmd.try_get_matches() {
@@ -157,7 +163,7 @@ fn run() -> Result<i32> {
 /// grouped roughly by feature area (dictionary browsing, validation, IO).
 fn build_cli() -> Command {
     let mut cmd = Command::new("fixdecoder")
-        .about("FIX protocol decoder tools")
+        .about("FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier")
         .disable_version_flag(true)
         .version(version_str())
         .arg(
@@ -555,40 +561,13 @@ fn find_message<'a>(
 }
 
 fn print_git_clone() {
-    println!("\n  git clone {}\n", git_url());
+    println!("  git clone {}", git_url());
 }
 /// Print the condensed usage guide.  Kept in one function so we can reuse it
 /// whenever argument parsing fails.
 fn print_usage() {
-    println!(
-        "\n
-Command line option examples:
-  Query FIX dictionary contents by FIX Message Name or MsgType:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
-
-    $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
-    $ fixdecoder --message=D --verbose --column --header --trailer
-  
-  Query FIX dictionary contents by FIX Tag number:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
-
-    $ fixdecoder --tag=44 --verbose --column
-    
-  Query FIX dictionary contents by FIX Component Name:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
-
-    $ fixdecoder --component=Instrument --verbose --column
-
-  Show summary information about available FIX dictionaries:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
-
-    $ fixdecoder --info
-
-  Prettify FIX log files with optional validation and obfuscation if output is piped then colour is disabled by default but can be forced on with --colour=yes:
-    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--delimiter=CHAR] [file1.log file2.log ...]
-
-    $ fixdecoder --validate --secret --delimiter='|' logs/fix.log\n"
-    );
+    static USAGE: &str = include_str!("../resources/messages/usage_en.txt");
+    println!("\n{USAGE}");
 }
 
 /// Normalise user-supplied FIX version identifiers (e.g. `4.4`, `fix44`)
@@ -891,9 +870,10 @@ mod tests {
     #[test]
     fn version_string_matches_components() {
         let expected = format!(
-            "fixdecoder {VERSION} (branch:{}, commit:{})",
+            "fixdecoder {VERSION} (branch:{}, commit:{}) [rust:{}]",
             branch(),
-            sha()
+            sha(),
+            rust_version()
         );
         assert_eq!(version_string(), expected);
     }
