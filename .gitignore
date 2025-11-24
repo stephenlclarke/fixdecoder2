@@ -18,3 +18,7 @@ build_version.env
 src/fix/sensitive.rs
 resources/**/*.xml
 !resources/NOTICE.MD
+
+# Python cache
+__pycache__/
+*.pyc
