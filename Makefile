@@ -56,7 +56,14 @@ release:
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
 	fi; \
-	$$py -c "import sys,re,pathlib; cur,new=sys.argv[1:3]; path=pathlib.Path('\"'\"'Cargo.toml'\"'\"'); text=path.read_text(); text=re.sub(r'^version\\s*=\\s*\"'\"''\"'\"'+re.escape(cur)+r'\"'\"''\"'\"'', f'version = \"'\"'\"{new}\"'\"'\"', text, count=1, flags=re.M); path.write_text(text)" "$$ver" "$$next"; \
+	$$py - "$$ver" "$$next" <<'PY' || exit 1
+import pathlib, re, sys
+cur, new = sys.argv[1:3]
+path = pathlib.Path("Cargo.toml")
+text = path.read_text()
+text = re.sub(r'^version\s*=\s*"' + re.escape(cur) + r'"', f'version = "{new}"', text, count=1, flags=re.M)
+path.write_text(text)
+PY
 	echo "Bumped version: $$ver -> $$next"; \
 	git add Cargo.toml; \
 	git commit -m "chore(release): v$$next"; \
