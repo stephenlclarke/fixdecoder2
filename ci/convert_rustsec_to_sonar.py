@@ -25,8 +25,13 @@ SEVERITY_MAP: Dict[str, str] = {
 
 def load_input(path: Path) -> Dict[str, Any]:
     """Load and parse a JSON file into a dictionary."""
-    with path.open(encoding="utf-8") as fh:
-        return json.load(fh)
+    if not path.exists() or path.stat().st_size == 0:
+        return {"vulnerabilities": {"list": []}}
+    try:
+        with path.open(encoding="utf-8") as fh:
+            return json.load(fh)
+    except json.JSONDecodeError:
+        return {"vulnerabilities": {"list": []}}
 
 
 def map_issue(vuln: Dict[str, Any]) -> Dict[str, Any]:

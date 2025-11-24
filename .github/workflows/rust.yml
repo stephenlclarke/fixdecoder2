@@ -160,23 +160,12 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y make
       - name: Run scan and coverage
         run: make scan coverage
-      - name: Run cargo-audit (JSON) and convert to Sonar issues
-        run: |
-          mkdir -p target/coverage
-          cargo audit --json > target/coverage/rustsec.json || true
-          python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: target/coverage/coverage.xml
           if-no-files-found: error
-      - name: Upload sonar issues artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: sonar-generic-issues
-          path: target/coverage/sonar-generic-issues.json
-          if-no-files-found: warn
 
   audit:
     name: Security Audit (RustSec)
@@ -185,6 +174,10 @@ jobs:
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
+      - name: Setup environment
+        shell: bash
+        run: |
+          bash -lc 'source ci/ci_helper.sh && cmd_setup_environment'
       - name: Run cargo-audit (JSON) and convert to Sonar issues
         run: |
           mkdir -p target/coverage
