@@ -48,11 +48,14 @@ coverage: build
 		  --output-path target/coverage/coverage.xml \
 	'
 
-sonar: coverage
+sonar:
 	@bash -lc '\
 		source $(CI_SCRIPT) && \
+		if [[ -z "$$(echo "$(MAKECMDGOALS)" | grep -E "(^| )scan( |$$)|(^| )coverage( |$$)")" ]]; then \
+			$(MAKE) scan coverage; \
+		fi; \
 		ensure_sonar_scanner && \
-		sonar-scanner \
+		sonar-scanner -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
 	'
 
 release:

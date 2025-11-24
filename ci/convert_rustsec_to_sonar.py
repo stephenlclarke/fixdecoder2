@@ -56,6 +56,7 @@ def map_issue(vuln: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         # Generic Issue Data (current format)
+        "engineId": "cargo-audit",
         "ruleId": advisory_id,
         "ruleRepository": "cargo-audit",
         "severity": sonar_severity,
@@ -63,7 +64,7 @@ def map_issue(vuln: Dict[str, Any]) -> Dict[str, Any]:
         "primaryLocation": {
             "message": message,
             "filePath": "Cargo.lock",
-            "textRange": {"startLine": 1, "endLine": 1},
+            "textRange": {"startLine": 1, "startColumn": 1, "endLine": 1, "endColumn": 1},
         },
     }
 

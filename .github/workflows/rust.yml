@@ -207,10 +207,10 @@ jobs:
           path: target/coverage
 
       - name: Run sonar-scanner
-        uses: SonarSource/sonarcloud-github-action@v2.1.0
+        uses: sonarsource/sonarcloud-github-action@v2.1.0
         env:
-          PATH: ${{ env.HOME }}/.cargo/bin:/root/.cargo/bin:${{ env.PATH }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           args: >
             -Dsonar.host.url=https://sonarcloud.io
