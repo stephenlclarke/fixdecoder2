@@ -55,13 +55,15 @@ def map_issue(vuln: Dict[str, Any]) -> Dict[str, Any]:
     message = " | ".join(message_parts)
 
     return {
-        "engineId": "cargo-audit",
+        # Generic Issue Data (current format)
         "ruleId": advisory_id,
+        "ruleRepository": "cargo-audit",
         "severity": sonar_severity,
         "type": "VULNERABILITY",
         "primaryLocation": {
             "message": message,
             "filePath": "Cargo.lock",
+            "textRange": {"startLine": 1, "endLine": 1},
         },
     }
 

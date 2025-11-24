@@ -19,8 +19,23 @@ build-release: prepare
 	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build --release'
 
 scan: prepare
-	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings'
-	@command -v cargo-audit >/dev/null 2>&1 && cargo audit || echo "cargo-audit not installed; skipping security scan"
+	@bash -lc '\
+		source $(CI_SCRIPT) && \
+		ensure_build_metadata && \
+		cargo fmt --all --check && \
+		cargo clippy --all-targets -- -D warnings && \
+		mkdir -p target/coverage && \
+		if command -v cargo-audit >/dev/null 2>&1; then \
+			echo "Running cargo-audit (text output)"; \
+			cargo audit || true; \
+			echo "Running cargo-audit (JSON) → target/coverage/rustsec.json"; \
+			cargo audit --json > target/coverage/rustsec.json || true; \
+			echo "Converting RustSec report to Sonar generic issues (target/coverage/sonar-generic-issues.json)"; \
+			python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json || true; \
+		else \
+			echo "cargo-audit not installed; skipping security scan"; \
+		fi \
+	'
 
 coverage: build
 	@bash -lc '\
