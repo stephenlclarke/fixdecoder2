@@ -49,6 +49,10 @@ jobs:
     needs: [dictionaries]
     # Only build release artifacts when tagging; skips lint/coverage.
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    env:
+      FIXDECODER_BRANCH: ${{ github.ref_name }}
+      FIXDECODER_COMMIT: ${{ github.sha }}
+      FIXDECODER_GIT_URL: https://github.com/${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
