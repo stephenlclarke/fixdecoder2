@@ -3,7 +3,7 @@
 SHELL := /bin/bash
 CI_SCRIPT := ./ci/ci_helper.sh
 
-.PHONY: setup-environment prepare build build-release scan coverage sonar clean help
+.PHONY: setup-environment prepare build build-release scan coverage sonar release clean help
 
 setup-environment:
 	@bash -lc 'source $(CI_SCRIPT) && cmd_setup_environment'
@@ -38,6 +38,19 @@ sonar: coverage
 		ensure_sonar_scanner && \
 		sonar-scanner \
 	'
+
+release:
+	@ver=$$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
+	if git rev-parse "v$$ver" >/dev/null 2>&1; then \
+		echo "Tag v$$ver already exists; aborting."; \
+		exit 1; \
+	fi; \
+	if ! git diff --quiet || ! git diff --cached --quiet; then \
+		echo "Working tree is not clean; commit or stash changes before tagging."; \
+		exit 1; \
+	fi; \
+	git tag -a "v$$ver" -m "Release v$$ver"; \
+	echo "Created tag v$$ver"
 
 clean:
 	@cargo clean
