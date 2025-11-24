@@ -50,20 +50,13 @@ release:
 	if [ -z "$$ver" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
 	next="$$ver"; \
 	while git rev-parse "v$${next}" >/dev/null 2>&1; do \
-		next=$$($$py -c "import sys; maj,mi,pa = map(int, sys.argv[1].split('.')); print(f'{maj}.{mi}.{pa+1}')" "$${next}"); \
+		next=$$($$py ci/bump_version.py "$${next}"); \
 	done; \
 	if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
 	fi; \
-		$$py - "$$ver" "$$next" <<'PY' || exit 1
-import pathlib, re, sys
-cur, new = sys.argv[1:3]
-path = pathlib.Path("Cargo.toml")
-text = path.read_text()
-text = re.sub(r'^version\s*=\s*"' + re.escape(cur) + r'"', f'version = "{new}"', text, count=1, flags=re.M)
-path.write_text(text)
-PY
+	$$py ci/bump_version.py "$$ver" "$$next" || exit 1; \
 	echo "Bumped version: $$ver -> $$next"; \
 	git add Cargo.toml; \
 	git commit -m "chore(release): v$$next"; \
