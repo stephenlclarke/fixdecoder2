@@ -46,21 +46,9 @@ release:
 		echo "python3 (or python) is required for release bumping." >&2; \
 		exit 1; \
 	fi; \
-	cur=$$($$py - <<'PY' \
-import re, sys, pathlib \
-toml = pathlib.Path("Cargo.toml").read_text() \
-m = re.search(r'^version\\s*=\\s*"([0-9]+\\.[0-9]+\\.[0-9]+)"', toml, re.M) \
-print(m.group(1) if m else "") \
-PY \
-	); \
+	cur=$$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
 	if [ -z "$$cur" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
-	next=$$($$py - <<'PY' "$$cur" \
-import sys \
-major, minor, patch = map(int, sys.argv[1].split(".")) \
-patch += 1 \
-print(f"{major}.{minor}.{patch}") \
-PY \
-	); \
+	next=$$($$py -c 'import sys; major, minor, patch = map(int, sys.argv[1].split(".")); patch += 1; print(f"{major}.{minor}.{patch}")' "$$cur"); \
 	if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
@@ -69,15 +57,7 @@ PY \
 		echo "Tag v$$next already exists; aborting." >&2; \
 		exit 1; \
 	fi; \
-	$$py - <<'PY' "$$cur" "$$next" \
-import pathlib, re, sys \
-cur, new = sys.argv[1], sys.argv[2] \
-path = pathlib.Path("Cargo.toml") \
-text = path.read_text() \
-text = re.sub(r'^version\\s*=\\s*"' + re.escape(cur) + r'"', f'version = "{new}"', text, count=1, flags=re.M) \
-path.write_text(text) \
-PY \
-	; \
+	$$py -c 'import pathlib, re, sys; cur,new=sys.argv[1:3]; path=pathlib.Path("Cargo.toml"); text=path.read_text(); text=re.sub(r'^version\\s*=\\s*"' + re.escape(cur) + r'"', f'version = "{new}"', text, count=1, flags=re.M); path.write_text(text)' "$$cur" "$$next"; \
 	echo "Bumped version: $$cur -> $$next"; \
 	git add Cargo.toml; \
 	git commit -m "chore(release): v$$next"; \
