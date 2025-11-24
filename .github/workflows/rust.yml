@@ -181,12 +181,11 @@ jobs:
           name: coverage-xml
           path: target/coverage
       - name: Run sonar-scanner
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         uses: sonarsource/sonarcloud-github-action@v2.1.0
         with:
           args: >
             -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.login=${{ secrets.SONAR_TOKEN }}
 
   release:
     name: Publish Release
