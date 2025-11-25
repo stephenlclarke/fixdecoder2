@@ -38,16 +38,24 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_path: target/aarch64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-arm64
+            ext: ""
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_path: target/x86_64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-x86_64
+            ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_path: target/x86_64-pc-windows-msvc/release/fixdecoder.exe
+            asset_suffix: windows-x86_64
+            ext: ".exe"
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
+            asset_suffix: linux-x86_64
+            ext: ""
     runs-on: ${{ matrix.os }}
     needs: [dictionaries]
     # Only build release artifacts when tagging; skips lint/coverage.
@@ -110,11 +118,16 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
         env:
           RUSTFLAGS: ""
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.artifact_path }}" "dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fixdecoder-${{ matrix.target }}
-          path: ${{ matrix.artifact_path }}
+          name: fixdecoder-${{ matrix.asset_suffix }}
+          path: dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}
 
   quality:
     name: Lint & Coverage
@@ -237,14 +250,18 @@ jobs:
       - name: Rename artifacts with version
         run: |
           ver="${{ steps.version.outputs.version }}"
-          cd dist
-          for f in *; do
-            case "$f" in
-              *.exe)
-                mv "$f" "fixdecoder-${ver}-${f}"
+          shopt -s nullglob
+          for f in dist/fixdecoder-*; do
+            base="${f##*/}"
+            case "$base" in
+              fixdecoder-*.exe)
+                suffix="${base#fixdecoder-}"
+                suffix="${suffix%.exe}"
+                mv "$f" "dist/fixdecoder-${ver}.${suffix}.exe"
                 ;;
-              fixdecoder*)
-                mv "$f" "fixdecoder-${ver}-${f#fixdecoder-}"
+              fixdecoder-*)
+                suffix="${base#fixdecoder-}"
+                mv "$f" "dist/fixdecoder-${ver}.${suffix}"
                 ;;
             esac
           done
