@@ -30,7 +30,7 @@ jobs:
           path: resources
 
   build-matrix:
-    name: Build release (${{ matrix.target }})
+    name: Build release (tags only)
     strategy:
       fail-fast: true
       matrix:
