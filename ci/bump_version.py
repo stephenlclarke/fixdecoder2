@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Patch the Cargo.toml version and print the bumped version.
+Patch the Cargo.toml version (and Cargo.lock if present) and print the bumped version.
 
 Usage:
     python bump_version.py <current_version> <new_version>
@@ -22,6 +22,24 @@ def bump_patch(version: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
+def update_lockfile(cur: str, new: str) -> bool:
+    """Update the package version in Cargo.lock, if the file exists."""
+    lock_path = Path("Cargo.lock")
+    if not lock_path.exists():
+        return True
+
+    text = lock_path.read_text(encoding="utf-8")
+    pattern = rf'(?m)^name = "fixdecoder"\nversion = "{re.escape(cur)}"'
+    replacement = f'name = "fixdecoder"\nversion = "{new}"'
+    updated, count = re.subn(pattern, replacement, text, count=1)
+    if count == 0:
+        print(f"failed to find fixdecoder version {cur} in Cargo.lock", file=sys.stderr)
+        return False
+
+    lock_path.write_text(updated, encoding="utf-8")
+    return True
+
+
 def main() -> int:
     """Bump the version in Cargo.toml from current to next (auto-increment if missing)."""
     if len(sys.argv) < 2:
@@ -38,6 +56,10 @@ def main() -> int:
         print(f"failed to find version {cur} in Cargo.toml", file=sys.stderr)
         return 1
     path.write_text(updated, encoding="utf-8")
+
+    if not update_lockfile(cur, new):
+        return 1
+
     return 0
 
 

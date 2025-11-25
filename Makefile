@@ -74,14 +74,25 @@ release:
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
 	fi; \
+	cleanup() { \
+		rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			echo "Release failed; restoring Cargo.toml/Cargo.lock" >&2; \
+			git restore --staged Cargo.toml Cargo.lock >/dev/null 2>&1 || true; \
+			git restore Cargo.toml Cargo.lock >/dev/null 2>&1 || true; \
+		fi; \
+		exit $$rc; \
+	}; \
+	trap 'cleanup' EXIT; \
 	$$py ci/bump_version.py "$$ver" "$$next" || exit 1; \
 	echo "Bumped version: $$ver -> $$next"; \
-	git add Cargo.toml; \
+	if [ -f Cargo.lock ]; then git add Cargo.toml Cargo.lock; else git add Cargo.toml; fi; \
 	git commit -m "chore(release): v$$next"; \
 	git tag -a "v$$next" -m "Release v$$next"; \
 	git push origin HEAD; \
 	git push origin "v$$next"; \
-	echo "Created and pushed tag v$$next"
+	echo "Created and pushed tag v$$next"; \
+	trap - EXIT
 
 clean:
 	@cargo clean
