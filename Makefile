@@ -68,7 +68,7 @@ release:
 	if [ -z "$$ver" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
 	next="$$ver"; \
 	while git rev-parse "v$${next}" >/dev/null 2>&1; do \
-		next=$$($$py ci/bump_version.py "$${next}"); \
+		next=$$($$py ci/next_patch.py "$${next}"); \
 	done; \
 	if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
