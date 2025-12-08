@@ -12,6 +12,7 @@
 mod decoder;
 mod fix;
 
+use crate::decoder::colours;
 use anyhow::{Context, Result, anyhow};
 use atty::Stream;
 use clap::error::ErrorKind;
@@ -21,11 +22,12 @@ use decoder::{
     DisplayStyle, FixDictionary, disable_output_colours, display_component, display_message,
     list_all_components, list_all_messages, list_all_tags, prettify_files, print_component_columns,
     print_message_columns, print_tag_details, print_tags_in_columns, register_fix_dictionary,
-    schema::SchemaTree, set_validation, summary::OrderSummary,
+    schema::SchemaTree, set_validation, summary::OrderSummary, tag_lookup,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::sync::OnceLock;
 
 /// Wrapper for a custom FIX dictionary sourced from `--xml` along with its path.
@@ -164,7 +166,17 @@ fn run() -> Result<i32> {
         fix_override.as_deref(),
     );
 
-    if let Some(ref summary) = summary {
+    if tag_lookup::override_warn_triggered() {
+        let colours = colours::palette();
+        writeln!(
+            stderr,
+            "{}Notice:{} FIX override not found; decoded using detected dictionary",
+            colours.error, colours.reset
+        )
+        .ok();
+    }
+
+    if let Some(ref mut summary) = summary {
         summary.render(&mut stdout)?;
     }
 

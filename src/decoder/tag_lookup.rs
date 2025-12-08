@@ -5,6 +5,7 @@ use crate::decoder::schema::{ComponentDef, FixDictionary, GroupDef, Message, Mes
 use crate::fix;
 use once_cell::sync::Lazy;
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 #[derive(Clone, Debug)]
@@ -132,6 +133,8 @@ impl FixTagLookup {
 static LOOKUPS: Lazy<RwLock<HashMap<String, Arc<FixTagLookup>>>> =
     Lazy::new(|| RwLock::new(HashMap::new()));
 
+static OVERRIDE_MISS: AtomicBool = AtomicBool::new(false);
+
 const SESSION_KEY: &str = "FIXT11";
 
 fn schema_to_xml_id(key: &str) -> Option<&'static str> {
@@ -245,6 +248,7 @@ pub fn load_dictionary(msg: &str) -> Arc<FixTagLookup> {
 }
 
 /// Load a dictionary by explicit schema key (e.g. FIX44), falling back to FIX44 when missing.
+#[cfg(test)]
 pub fn load_dictionary_for_key(key: &str) -> Arc<FixTagLookup> {
     get_dictionary(key)
         .or_else(|| get_dictionary("FIX44"))
@@ -254,9 +258,29 @@ pub fn load_dictionary_for_key(key: &str) -> Arc<FixTagLookup> {
 /// Load a dictionary, allowing an override schema key to force the selection used for decoding.
 pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> Arc<FixTagLookup> {
     if let Some(key) = override_key {
-        return load_dictionary_for_key(key);
+        if let Some(dict) = get_dictionary(key) {
+            return dict;
+        }
+        eprintln!(
+            "warning: FIX override '{}' not found; falling back to auto-detected dictionary",
+            key
+        );
+        warn_override_miss();
     }
     load_dictionary(msg)
+}
+
+fn warn_override_miss() {
+    OVERRIDE_MISS.store(true, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+pub fn reset_override_warn() {
+    OVERRIDE_MISS.store(false, Ordering::Relaxed);
+}
+
+pub fn override_warn_triggered() -> bool {
+    OVERRIDE_MISS.load(Ordering::Relaxed)
 }
 
 pub fn register_dictionary(key: &str, dict: &FixDictionary) {
@@ -520,5 +544,14 @@ mod tests {
             Arc::ptr_eq(&direct, &overridden),
             "override should select the explicit dictionary key"
         );
+    }
+
+    #[test]
+    fn warns_and_falls_back_on_unknown_override() {
+        reset_override_warn();
+        let msg = "8=FIX.4.4\u{0001}35=0\u{0001}10=000\u{0001}";
+        let dict = load_dictionary_with_override(msg, Some("FIX00BAD"));
+        assert!(override_warn_triggered(), "missing override should warn");
+        assert_eq!(dict.field_name(35), "MsgType");
     }
 }

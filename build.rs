@@ -11,12 +11,36 @@ fn main() {
         .unwrap_or_else(|_| "unknown".to_string());
     println!("cargo:rustc-env=RUSTC_VERSION={rustc}");
 
+    // Version/tag: prefer FIXDECODER_VERSION env, else git describe, else Cargo pkg version.
+    let cargo_ver = env!("CARGO_PKG_VERSION").to_string();
+    let version = std::env::var("FIXDECODER_VERSION")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .filter(|v| {
+            let stripped = v.trim_start_matches('v');
+            stripped == cargo_ver
+        })
+        .unwrap_or_else(|| cargo_ver.clone());
+    println!("cargo:rustc-env=FIXDECODER_VERSION={version}");
+
     let commit = std::env::var("FIXDECODER_COMMIT")
         .ok()
         .filter(|v| !v.is_empty())
         .or_else(|| git_output(&["rev-parse", "--short", "HEAD"]))
         .unwrap_or_else(|| "0000000".to_string());
     println!("cargo:rustc-env=FIXDECODER_COMMIT={commit}");
+
+    let branch = std::env::var("FIXDECODER_BRANCH")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| git_output(&["rev-parse", "--abbrev-ref", "HEAD"]))
+        .unwrap_or_else(|| "main".to_string());
+    println!("cargo:rustc-env=FIXDECODER_BRANCH={branch}");
+
+    // Surface the version being built so `cargo build` output includes our metadata.
+    println!(
+        "cargo:warning=Building fixdecoder {version} (branch:{branch}, commit:{commit}) [rust:{rustc}]"
+    );
 }
 
 fn git_output(args: &[&str]) -> Option<String> {

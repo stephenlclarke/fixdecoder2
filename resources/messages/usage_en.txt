@@ -26,4 +26,4 @@ Command line option examples:
     $ fixdecoder --validate --secret --summary logs/fix.log
     $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' --summary | less
     $ fixdecoder --fix=44 trades.log   (forces FIX44 decoding instead of auto-detect)
-    $ tail -f logs/fix.log | fixdecoder --validate\n"
+    $ tail -f logs/fix.log | fixdecoder --validate

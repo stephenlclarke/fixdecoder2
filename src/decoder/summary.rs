@@ -3,9 +3,9 @@
 
 use crate::decoder::colours::palette;
 use crate::decoder::fixparser::parse_fix;
-use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary};
+use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary_with_override};
 use chrono::{Datelike, Duration, NaiveDate};
-use std::collections::HashMap;
+use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
 
 /// Captures FIX order lifecycles while streaming messages so a concise summary
@@ -15,6 +15,9 @@ pub struct OrderSummary {
     orders: HashMap<String, OrderRecord>,
     aliases: HashMap<String, String>,
     unknown_counter: usize,
+    completed: Vec<OrderRecord>,
+    total_orders: usize,
+    terminal_orders: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +64,7 @@ struct OrderRecord {
 struct OrderEvent {
     time: Option<String>,
     msg_type: Option<String>,
+    msg_type_desc: Option<String>,
     exec_type: Option<String>,
     ord_status: Option<String>,
     exec_ack_status: Option<String>,
@@ -71,6 +75,8 @@ struct OrderEvent {
     last_px: Option<String>,
     avg_px: Option<String>,
     text: Option<String>,
+    cl_ord_id: Option<String>,
+    orig_cl_ord_id: Option<String>,
 }
 
 impl OrderSummary {
@@ -78,7 +84,7 @@ impl OrderSummary {
         Self::default()
     }
 
-    pub fn record_message(&mut self, msg: &str) {
+    pub fn record_message(&mut self, msg: &str, fix_override: Option<&str>) {
         let fields = parse_fix(msg);
         if fields.is_empty() {
             return;
@@ -98,12 +104,23 @@ impl OrderSummary {
             cl_ord_id.as_deref(),
             orig_cl_ord_id.as_deref(),
         );
-        let dict = load_dictionary(msg);
+        let dict = load_dictionary_with_override(msg, fix_override);
         self.note_aliases(&key, order_id, cl_ord_id, orig_cl_ord_id);
-        let record = self
-            .orders
-            .entry(key.clone())
-            .or_insert_with(|| OrderRecord::new(key.clone()));
+        let record = match self.orders.entry(key.clone()) {
+            Entry::Occupied(o) => o.into_mut(),
+            Entry::Vacant(v) => {
+                if let Some(pos) = self.completed.iter().position(|r| r.key == key) {
+                    let rec = self.completed.remove(pos);
+                    if rec.is_terminal() && self.terminal_orders > 0 {
+                        self.terminal_orders -= 1;
+                    }
+                    v.insert(rec)
+                } else {
+                    self.total_orders += 1;
+                    v.insert(OrderRecord::new(key.clone()))
+                }
+            }
+        };
 
         record.merge_ids(
             map.get(&37).cloned(),
@@ -112,188 +129,213 @@ impl OrderSummary {
         );
         record.absorb_fields(&map, &dict, map.get(&35).map(|s| s.as_str()));
 
-        let event = OrderEvent::from_fields(&map);
+        let event = OrderEvent::from_fields(&map, &dict);
         record.events.push(event);
+
+        if record.is_terminal() {
+            self.completed.push(record.clone());
+            self.orders.remove(&key);
+            self.terminal_orders += 1;
+        }
     }
 
+    /// Render and clear any completed orders to allow streaming output in summary-only mode.
     pub fn render(&self, out: &mut dyn Write) -> std::io::Result<()> {
         let colours = palette();
         let mut keys: Vec<&String> = self.orders.keys().collect();
         keys.sort();
+        let open = self.orders.len();
+        let total = self.total_orders;
 
-        writeln!(
-            out,
-            "{}Order Summary{} ({} orders)\n",
-            colours.title,
-            colours.reset,
-            keys.len()
-        )?;
+        for record in &self.completed {
+            self.render_record(out, record)?;
+        }
 
         for key in keys {
             let record = &self.orders[key];
-            let states = record.state_path();
-            let header_state = states
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "Unknown".to_string());
-            let qty_label = record.order_qty_name.as_deref().unwrap_or("qty");
-            let value_date =
-                preferred_settl_date(record.settl_date.as_deref(), record.settl_date2.as_deref());
-            let date_diff = date_diff_days(record.trade_date.as_deref(), value_date);
-            writeln!(
-                out,
-                "  {}{}{} [{}{}{}] {}",
-                colours.file,
-                record.display_id(),
-                colours.reset,
-                colours.name,
-                header_state,
-                colours.reset,
-                colour_instrument(record.display_instrument()),
-            )?;
-
-            let mut headers = vec![
-                "Side",
-                "Symbol",
-                qty_label,
-                "Price",
-                record.trade_date_name.as_deref().unwrap_or("TradeDate"),
-                "Tenor",
-                record.tif_name.as_deref().unwrap_or("TimeInForce"),
-                record.ord_type_name.as_deref().unwrap_or("OrdType"),
-            ];
-            let mut values = vec![
-                colour_enum_text(
-                    colours,
-                    record
-                        .side
-                        .as_deref()
-                        .map(side_label)
-                        .map(|s| s.to_ascii_uppercase()),
-                ),
-                colour_value(colours, record.symbol.as_deref().unwrap_or("-")),
-                colour_value(colours, record.qty.as_deref().unwrap_or("-")),
-                format_price(colours, record.price.as_deref(), record.currency.as_deref()),
-                colour_value(colours, record.trade_date.as_deref().unwrap_or("-")),
-                format_tenor(colours, date_diff),
-                colour_enum_text(colours, record.tif_desc.as_deref().map(|s| s.to_string())),
-                colour_enum_text(
-                    colours,
-                    record.ord_type_desc.as_deref().map(|s| s.to_string()),
-                ),
-            ];
-            if record.bn_seen {
-                headers.push(record.spot_rate_name.as_deref().unwrap_or("SpotPrice"));
-                headers.push("ExecAmt");
-                values.push(colour_value(
-                    colours,
-                    record.spot_rate.as_deref().unwrap_or("-"),
-                ));
-                let exec_amt = record.bn_exec_amt.as_deref();
-                values.push(colour_value(colours, exec_amt.unwrap_or("-")));
-            }
-            headers.push(if record.settl_date2.is_some() {
-                record.settl_date2_name.as_deref().unwrap_or("SettlDate2")
-            } else if record.settl_date.is_some() {
-                record.settl_date_name.as_deref().unwrap_or("SettlDate")
-            } else {
-                record
-                    .settl_date2_name
-                    .as_deref()
-                    .or(record.settl_date_name.as_deref())
-                    .unwrap_or("ValueDate")
-            });
-            values.push(colour_value(colours, value_date.unwrap_or("-")));
-            render_table_row(out, &headers, &values)?;
-
-            if !states.is_empty() {
-                writeln!(
-                    out,
-                    "    {}flow{}: {}{}{}",
-                    colours.tag,
-                    colours.reset,
-                    colours.name,
-                    states.join(" -> "),
-                    colours.reset
-                )?;
-            }
-
-            writeln!(out, "    {}timeline:{}", colours.tag, colours.reset)?;
-            let mut timeline_headers = vec![
-                ("time", 22usize),
-                ("ExecType", 18),
-                ("OrdStatus", 18),
-                ("cum/leaves", 18),
-                ("last@price", 18),
-                ("avgPx", 10),
-                ("msg", 6),
-                ("text", 0),
-            ];
-            if record.bn_seen {
-                timeline_headers.insert(1, ("ExecAckStatus", 18));
-            }
-            write!(out, "      ")?;
-            for (label, width) in &timeline_headers {
-                let w = if *width == 0 { label.len() + 2 } else { *width };
-                let coloured = format!("{}{}{}", colours.name, label, colours.reset);
-                write!(out, "{} ", pad_ansi(&coloured, w))?;
-            }
-            writeln!(out)?;
-            for ev in &record.events {
-                let time = ev.time.as_deref().unwrap_or("-");
-                let exec = colour_label_code(colours, ev.exec_label(), ev.exec_type.as_deref());
-                let ord = colour_label_code(colours, ev.ord_label(), ev.ord_status.as_deref());
-                let exec_ack = ev
-                    .exec_ack_status
-                    .as_deref()
-                    .map(|code| {
-                        colour_label_code(colours, label_exec_ack_status(Some(code)), Some(code))
-                    })
-                    .unwrap_or_else(|| colour_label_code(colours, "Unknown".to_string(), None));
-                let last = format!(
-                    "{}{}@{}{}",
-                    colours.value,
-                    ev.last_qty.as_deref().unwrap_or("-"),
-                    ev.last_px.as_deref().unwrap_or("-"),
-                    colours.reset
-                );
-                let cum_leaves = format!(
-                    "{}{}/{}{}",
-                    colours.value,
-                    ev.cum_qty.as_deref().unwrap_or("-"),
-                    ev.leaves_qty.as_deref().unwrap_or("-"),
-                    colours.reset
-                );
-                let mut cells = Vec::new();
-                cells.push(pad_ansi(
-                    &format!("{}{}{}", colours.value, time, colours.reset),
-                    22,
-                ));
-                if record.bn_seen {
-                    cells.push(pad_ansi(&exec_ack, 18));
-                }
-                cells.push(pad_ansi(&exec, 18));
-                cells.push(pad_ansi(&ord, 18));
-                cells.push(pad_ansi(&cum_leaves, 18));
-                cells.push(pad_ansi(&last, 18));
-                cells.push(pad_ansi(
-                    &colour_value(colours, ev.avg_px.as_deref().unwrap_or("-")),
-                    10,
-                ));
-                cells.push(pad_ansi(
-                    &colour_msg(colours, ev.msg_type.as_deref().unwrap_or("-")),
-                    6,
-                ));
-                cells.push(pad_ansi(
-                    &colour_text(colours, ev.text.as_deref().unwrap_or("")),
-                    0,
-                ));
-
-                writeln!(out, "      {}{}", colours.line, cells.join(" "))?;
-            }
-
-            writeln!(out)?;
+            self.render_record(out, record)?;
         }
+
+        writeln!(
+            out,
+            "{}Order Summary{} ({} open, {} total, to fill: {}/{})",
+            colours.title, colours.reset, open, total, open, total
+        )
+    }
+
+    fn render_record(&self, out: &mut dyn Write, record: &OrderRecord) -> std::io::Result<()> {
+        let colours = palette();
+        let states = record.state_path();
+        let flow_label = if states.is_empty() {
+            "Unknown".to_string()
+        } else {
+            let trimmed =
+                if states.len() > 1 && states.first().map(|s| s.as_str()) == Some("Unknown") {
+                    states.iter().skip(1).cloned().collect::<Vec<_>>()
+                } else {
+                    states.clone()
+                };
+            if trimmed.is_empty() {
+                "Unknown".to_string()
+            } else {
+                trimmed.join(" -> ")
+            }
+        };
+        let qty_label = record.order_qty_name.as_deref().unwrap_or("qty");
+        let value_date =
+            preferred_settl_date(record.settl_date.as_deref(), record.settl_date2.as_deref());
+        let date_diff = date_diff_days(record.trade_date.as_deref(), value_date);
+        writeln!(
+            out,
+            "  {}{}{} [{}{}{}] {}",
+            colours.file,
+            record.display_id(),
+            colours.reset,
+            colours.name,
+            flow_label,
+            colours.reset,
+            colour_instrument(record.display_instrument()),
+        )?;
+
+        let mut headers = vec![
+            "Side",
+            "Symbol",
+            qty_label,
+            "Price",
+            record.trade_date_name.as_deref().unwrap_or("TradeDate"),
+            "Tenor",
+            record.tif_name.as_deref().unwrap_or("TimeInForce"),
+            record.ord_type_name.as_deref().unwrap_or("OrdType"),
+        ];
+        let mut values = vec![
+            colour_enum_text(
+                colours,
+                record
+                    .side
+                    .as_deref()
+                    .map(side_label)
+                    .map(|s| s.to_ascii_uppercase()),
+            ),
+            colour_value(colours, record.symbol.as_deref().unwrap_or("-")),
+            colour_value(colours, record.qty.as_deref().unwrap_or("-")),
+            format_price(colours, record.price.as_deref(), record.currency.as_deref()),
+            colour_value(colours, record.trade_date.as_deref().unwrap_or("-")),
+            format_tenor(colours, date_diff),
+            colour_enum_text(colours, record.tif_desc.as_deref().map(|s| s.to_string())),
+            colour_enum_text(
+                colours,
+                record.ord_type_desc.as_deref().map(|s| s.to_string()),
+            ),
+        ];
+        if record.bn_seen {
+            headers.push(record.spot_rate_name.as_deref().unwrap_or("SpotPrice"));
+            headers.push("ExecAmt");
+            values.push(colour_value(
+                colours,
+                record.spot_rate.as_deref().unwrap_or("-"),
+            ));
+            let exec_amt = record.bn_exec_amt.as_deref();
+            values.push(colour_value(colours, exec_amt.unwrap_or("-")));
+        }
+        headers.push(if record.settl_date2.is_some() {
+            record.settl_date2_name.as_deref().unwrap_or("SettlDate2")
+        } else if record.settl_date.is_some() {
+            record.settl_date_name.as_deref().unwrap_or("SettlDate")
+        } else {
+            record
+                .settl_date2_name
+                .as_deref()
+                .or(record.settl_date_name.as_deref())
+                .unwrap_or("ValueDate")
+        });
+        values.push(colour_value(colours, value_date.unwrap_or("-")));
+        render_table_row(out, &headers, &values)?;
+
+        writeln!(out)?;
+        writeln!(out, "    {}timeline:{}", colours.tag, colours.reset)?;
+        let min_msg_width = 42usize;
+        let rendered_msgs: Vec<String> = record
+            .events
+            .iter()
+            .map(|ev| format_msg_cell(colours, ev))
+            .collect();
+        let msg_width = rendered_msgs
+            .iter()
+            .map(|s| visible_width(s))
+            .max()
+            .unwrap_or(0)
+            .max(min_msg_width);
+        let mut timeline_headers = vec![
+            ("time", 22usize),
+            ("msg", msg_width),
+            ("ExecType", 18),
+            ("OrdStatus", 18),
+            ("cum/leaves", 18),
+            ("last@price", 18),
+            ("avgPx", 10),
+            ("text", 0),
+        ];
+        if record.bn_seen {
+            timeline_headers.insert(2, ("ExecAckStatus", 18));
+        }
+        write!(out, "      ")?;
+        for (label, width) in &timeline_headers {
+            let w = if *width == 0 { label.len() + 2 } else { *width };
+            let coloured = format!("{}{}{}", colours.name, label, colours.reset);
+            write!(out, "{} ", pad_ansi(&coloured, w))?;
+        }
+        writeln!(out)?;
+        for (ev, msg_cell) in record.events.iter().zip(rendered_msgs.iter()) {
+            let time = ev.time.as_deref().unwrap_or("-");
+            let exec = colour_label_code(colours, ev.exec_label(), ev.exec_type.as_deref());
+            let ord = colour_label_code(colours, ev.ord_label(), ev.ord_status.as_deref());
+            let exec_ack = ev
+                .exec_ack_status
+                .as_deref()
+                .map(|code| {
+                    colour_label_code(colours, label_exec_ack_status(Some(code)), Some(code))
+                })
+                .unwrap_or_else(|| colour_label_code(colours, "Unknown".to_string(), None));
+            let last = format!(
+                "{}{}@{}{}",
+                colours.value,
+                ev.last_qty.as_deref().unwrap_or("-"),
+                ev.last_px.as_deref().unwrap_or("-"),
+                colours.reset
+            );
+            let cum_leaves = format!(
+                "{}{}/{}{}",
+                colours.value,
+                ev.cum_qty.as_deref().unwrap_or("-"),
+                ev.leaves_qty.as_deref().unwrap_or("-"),
+                colours.reset
+            );
+            let mut cells = Vec::new();
+            cells.push(pad_ansi(
+                &format!("{}{}{}", colours.value, time, colours.reset),
+                22,
+            ));
+            cells.push(pad_ansi(msg_cell, msg_width));
+            if record.bn_seen {
+                cells.push(pad_ansi(&exec_ack, 18));
+            }
+            cells.push(pad_ansi(&exec, 18));
+            cells.push(pad_ansi(&ord, 18));
+            cells.push(pad_ansi(&cum_leaves, 18));
+            cells.push(pad_ansi(&last, 18));
+            cells.push(pad_ansi(
+                &colour_value(colours, ev.avg_px.as_deref().unwrap_or("-")),
+                10,
+            ));
+            cells.push(pad_ansi(
+                &colour_text(colours, ev.text.as_deref().unwrap_or("")),
+                0,
+            ));
+
+            writeln!(out, "      {}{}", colours.line, cells.join(" "))?;
+        }
+
+        writeln!(out)?;
 
         Ok(())
     }
@@ -330,7 +372,6 @@ impl OrderSummary {
         }
     }
 }
-
 impl OrderRecord {
     fn new(key: String) -> Self {
         Self {
@@ -373,6 +414,25 @@ impl OrderRecord {
         }
     }
 
+    fn is_terminal(&self) -> bool {
+        self.state_path()
+            .last()
+            .map(|s| {
+                matches!(
+                    s.as_str(),
+                    "Filled"
+                        | "Canceled"
+                        | "Rejected"
+                        | "Done for Day"
+                        | "Expired"
+                        | "Stopped"
+                        | "Suspended"
+                        | "Calculated"
+                )
+            })
+            .unwrap_or(false)
+    }
+
     fn merge_ids(
         &mut self,
         order_id: Option<String>,
@@ -396,39 +456,42 @@ impl OrderRecord {
         dict: &FixTagLookup,
         msg_type: Option<&str>,
     ) {
-        if let Some(sym) = fields.get(&55) {
-            self.symbol.get_or_insert(sym.clone());
-        }
-        if let Some(side) = fields.get(&54) {
-            self.side.get_or_insert(side.clone());
-        }
-        if let Some(qty) = fields.get(&38) {
-            self.qty = Some(qty.clone());
-            self.order_qty_name
-                .get_or_insert_with(|| dict.field_name(38));
-        }
-        if let Some(curr) = fields.get(&15) {
-            self.currency.get_or_insert(curr.clone());
-        }
-        if let Some(last) = fields.get(&32) {
-            self.last_qty = Some(last.clone());
-        }
-        if let Some(cum) = fields.get(&14) {
-            self.cum_qty = Some(cum.clone());
-            self.cum_qty_name.get_or_insert_with(|| dict.field_name(14));
-        }
-        if let Some(leaves) = fields.get(&151) {
-            self.leaves_qty = Some(leaves.clone());
-            self.leaves_qty_name
-                .get_or_insert_with(|| dict.field_name(151));
-        }
-        if let Some(avg) = fields.get(&6) {
-            self.avg_px = Some(avg.clone());
-            self.avg_px_name.get_or_insert_with(|| dict.field_name(6));
-        }
-        if let Some(price) = fields.get(&44) {
-            self.price = Some(price.clone());
-        }
+        let set = |target: &mut Option<String>, src: Option<&String>| {
+            if let Some(val) = src {
+                *target = Some(val.clone());
+            }
+        };
+        let set_with_name =
+            |target: &mut Option<String>, name_slot: &mut Option<String>, tag: u32| {
+                if let Some(val) = fields.get(&tag) {
+                    *target = Some(val.clone());
+                    name_slot.get_or_insert_with(|| dict.field_name(tag));
+                }
+            };
+        let set_enum_with_desc = |target: &mut Option<String>,
+                                  code_slot: &mut Option<String>,
+                                  desc_slot: &mut Option<String>,
+                                  name_slot: &mut Option<String>,
+                                  tag: u32| {
+            if let Some(val) = fields.get(&tag) {
+                *target = Some(enum_label(dict, tag, val));
+                *code_slot = Some(val.clone());
+                name_slot.get_or_insert_with(|| dict.field_name(tag));
+                if let Some(desc) = dict.enum_description(tag, val) {
+                    *desc_slot = Some(desc.to_ascii_uppercase());
+                }
+            }
+        };
+
+        set(&mut self.symbol, fields.get(&55));
+        set(&mut self.side, fields.get(&54));
+        set_with_name(&mut self.qty, &mut self.order_qty_name, 38);
+        set(&mut self.currency, fields.get(&15));
+        set(&mut self.last_qty, fields.get(&32));
+        set_with_name(&mut self.cum_qty, &mut self.cum_qty_name, 14);
+        set_with_name(&mut self.leaves_qty, &mut self.leaves_qty_name, 151);
+        set_with_name(&mut self.avg_px, &mut self.avg_px_name, 6);
+        set(&mut self.price, fields.get(&44));
         if let Some(spot) = fields.get(&190) {
             self.spot_rate = Some(spot.clone());
             self.spot_rate_name
@@ -436,32 +499,26 @@ impl OrderRecord {
         }
         if let Some(trd60) = fields.get(&60) {
             let date = extract_date_part(trd60).unwrap_or_else(|| trd60.clone());
-            self.trade_date.get_or_insert(date);
-            // Prefer showing the standard TradeDate label in the table even when sourced from tag 60.
+            set(&mut self.trade_date, Some(&date));
             self.trade_date_name
                 .get_or_insert_with(|| dict.field_name(75));
         }
-        if let Some(ord) = fields.get(&40) {
-            self.ord_type.get_or_insert(enum_label(dict, 40, ord));
-            self.ord_type_code.get_or_insert(ord.clone());
-            self.ord_type_name
-                .get_or_insert_with(|| dict.field_name(40));
-            if let Some(desc) = dict.enum_description(40, ord) {
-                self.ord_type_desc
-                    .get_or_insert_with(|| desc.to_ascii_uppercase());
-            }
-        }
-        if let Some(tif) = fields.get(&59) {
-            self.time_in_force.get_or_insert(enum_label(dict, 59, tif));
-            self.tif_code.get_or_insert(tif.clone());
-            self.tif_name.get_or_insert_with(|| dict.field_name(59));
-            if let Some(desc) = dict.enum_description(59, tif) {
-                self.tif_desc
-                    .get_or_insert_with(|| desc.to_ascii_uppercase());
-            }
-        }
+        set_enum_with_desc(
+            &mut self.ord_type,
+            &mut self.ord_type_code,
+            &mut self.ord_type_desc,
+            &mut self.ord_type_name,
+            40,
+        );
+        set_enum_with_desc(
+            &mut self.time_in_force,
+            &mut self.tif_code,
+            &mut self.tif_desc,
+            &mut self.tif_name,
+            59,
+        );
         if let Some(trd) = fields.get(&60) {
-            self.trade_date.get_or_insert(trd.clone());
+            set(&mut self.trade_date, Some(trd));
             self.trade_date_name
                 .get_or_insert_with(|| dict.field_name(60));
         }
@@ -470,12 +527,12 @@ impl OrderRecord {
             self.trade_date_name = Some(dict.field_name(75));
         }
         if let Some(s64) = fields.get(&64) {
-            self.settl_date.get_or_insert(s64.clone());
+            set(&mut self.settl_date, Some(s64));
             self.settl_date_name
                 .get_or_insert_with(|| dict.field_name(64));
         }
         if let Some(s193) = fields.get(&193) {
-            self.settl_date2.get_or_insert(s193.clone());
+            set(&mut self.settl_date2, Some(s193));
             self.settl_date2_name
                 .get_or_insert_with(|| dict.field_name(193));
         }
@@ -496,10 +553,10 @@ impl OrderRecord {
     fn state_path(&self) -> Vec<String> {
         let mut states = Vec::new();
         for ev in &self.events {
-            if let Some(last) = states.last() {
-                if last == &ev.state {
-                    continue;
-                }
+            if let Some(last) = states.last()
+                && last == &ev.state
+            {
+                continue;
             }
             states.push(ev.state.clone());
         }
@@ -524,7 +581,7 @@ impl OrderRecord {
 }
 
 impl OrderEvent {
-    fn from_fields(fields: &HashMap<u32, String>) -> Self {
+    fn from_fields(fields: &HashMap<u32, String>, dict: &FixTagLookup) -> Self {
         let exec_type = fields.get(&150).cloned();
         let ord_status = fields.get(&39).cloned();
         let exec_ack_status = fields.get(&1036).cloned();
@@ -542,6 +599,9 @@ impl OrderEvent {
                 .cloned()
                 .or_else(|| fields.get(&52).cloned()),
             msg_type: fields.get(&35).cloned(),
+            msg_type_desc: fields
+                .get(&35)
+                .and_then(|mt| dict.enum_description(35, mt).map(|d| d.to_string())),
             exec_type,
             ord_status,
             exec_ack_status,
@@ -552,6 +612,8 @@ impl OrderEvent {
             last_px: fields.get(&31).cloned(),
             avg_px: fields.get(&6).cloned(),
             text: fields.get(&58).cloned(),
+            cl_ord_id: fields.get(&11).cloned(),
+            orig_cl_ord_id: fields.get(&41).cloned(),
         }
     }
 
@@ -693,13 +755,9 @@ fn colour_value(colours: crate::decoder::colours::ColourPalette, value: &str) ->
     format!("{}{}{}", colours.value, value, colours.reset)
 }
 
-fn colour_msg(colours: crate::decoder::colours::ColourPalette, value: &str) -> String {
-    format!("{}{}{}", colours.tag, value, colours.reset)
-}
-
 fn colour_text(colours: crate::decoder::colours::ColourPalette, value: &str) -> String {
     if value.is_empty() {
-        return value.to_string();
+        return format!("{}-{}", colours.name, colours.reset);
     }
     format!("{}{}{}", colours.name, value, colours.reset)
 }
@@ -739,6 +797,30 @@ fn colour_enum_text(
 ) -> String {
     let val = text.unwrap_or_else(|| "-".to_string());
     format!("{}{}{}", colours.enumeration, val, colours.reset)
+}
+
+fn format_msg_cell(colours: crate::decoder::colours::ColourPalette, ev: &OrderEvent) -> String {
+    let base = if let Some(desc) = ev.msg_type_desc.as_deref() {
+        format!("{}{}{}", colours.enumeration, desc, colours.reset)
+    } else if let Some(code) = ev.msg_type.as_deref() {
+        format!("{}{}{}", colours.error, code, colours.reset)
+    } else {
+        format!("{}-{}", colours.error, colours.reset)
+    };
+
+    let mut ids = Vec::new();
+    if let Some(cl) = ev.cl_ord_id.as_deref() {
+        ids.push(format!("{}{}{}", colours.value, cl, colours.reset));
+    }
+    if let Some(orig) = ev.orig_cl_ord_id.as_deref() {
+        ids.push(format!("{}{}{}", colours.value, orig, colours.reset));
+    }
+    if ids.is_empty() {
+        return base;
+    }
+    let sep = format!("{},{}", colours.reset, colours.reset);
+    let joined = ids.join(&sep);
+    format!("{base} [{}{}{}]", colours.reset, joined, colours.reset)
 }
 
 fn format_tenor(colours: crate::decoder::colours::ColourPalette, diff: Option<i64>) -> String {
@@ -791,6 +873,7 @@ fn visible_width(text: &str) -> usize {
     width
 }
 
+/// Compute business-day diff skipping only weekends (no holiday calendar).
 fn date_diff_days(trade: Option<&str>, settl: Option<&str>) -> Option<i64> {
     let trade = NaiveDate::parse_from_str(trade?, "%Y%m%d").ok()?;
     let settl = NaiveDate::parse_from_str(settl?, "%Y%m%d").ok()?;
@@ -820,10 +903,11 @@ fn extract_date_part(ts: &str) -> Option<String> {
     if ts.len() >= 8 && ts.chars().take(8).all(|c| c.is_ascii_digit()) {
         return Some(ts.chars().take(8).collect());
     }
-    if let Some((prefix, _)) = ts.split_once('-') {
-        if prefix.len() == 8 && prefix.chars().all(|c| c.is_ascii_digit()) {
-            return Some(prefix.to_string());
-        }
+    if let Some((prefix, _)) = ts.split_once('-')
+        && prefix.len() == 8
+        && prefix.chars().all(|c| c.is_ascii_digit())
+    {
+        return Some(prefix.to_string());
     }
     None
 }
@@ -890,56 +974,72 @@ mod tests {
     #[test]
     fn collects_states_for_single_order() {
         let mut summary = OrderSummary::new();
-        summary.record_message(&msg(&[
-            ("35", "D"),
-            ("11", "ABC"),
-            ("55", "AAPL"),
-            ("54", "1"),
-            ("38", "100"),
-            ("40", "2"),
-            ("59", "0"),
-            ("75", "20250101"),
-            ("64", "20250103"),
-            ("193", "20250104"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("11", "ABC"),
-            ("150", "0"),
-            ("39", "0"),
-            ("55", "AAPL"),
-            ("54", "1"),
-            ("38", "100"),
-            ("14", "0"),
-            ("151", "100"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("11", "ABC"),
-            ("150", "1"),
-            ("39", "1"),
-            ("55", "AAPL"),
-            ("54", "1"),
-            ("32", "40"),
-            ("31", "10.00"),
-            ("14", "40"),
-            ("151", "60"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("11", "ABC"),
-            ("150", "2"),
-            ("39", "2"),
-            ("55", "AAPL"),
-            ("54", "1"),
-            ("32", "60"),
-            ("31", "10.10"),
-            ("14", "100"),
-            ("151", "0"),
-            ("6", "10.06"),
-        ]));
+        summary.record_message(
+            &msg(&[
+                ("35", "D"),
+                ("11", "ABC"),
+                ("55", "AAPL"),
+                ("54", "1"),
+                ("38", "100"),
+                ("40", "2"),
+                ("59", "0"),
+                ("75", "20250101"),
+                ("64", "20250103"),
+                ("193", "20250104"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "8"),
+                ("11", "ABC"),
+                ("150", "0"),
+                ("39", "0"),
+                ("55", "AAPL"),
+                ("54", "1"),
+                ("38", "100"),
+                ("14", "0"),
+                ("151", "100"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "8"),
+                ("11", "ABC"),
+                ("150", "1"),
+                ("39", "1"),
+                ("55", "AAPL"),
+                ("54", "1"),
+                ("32", "40"),
+                ("31", "10.00"),
+                ("14", "40"),
+                ("151", "60"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "8"),
+                ("11", "ABC"),
+                ("150", "2"),
+                ("39", "2"),
+                ("55", "AAPL"),
+                ("54", "1"),
+                ("32", "60"),
+                ("31", "10.10"),
+                ("14", "100"),
+                ("151", "0"),
+                ("6", "10.06"),
+            ]),
+            None,
+        );
 
-        let record = summary.orders.get("ABC").expect("order captured");
+        let record = summary
+            .orders
+            .get("ABC")
+            .or_else(|| summary.completed.iter().find(|r| r.key == "ABC"))
+            .expect("order captured");
         assert_eq!(
             record.state_path(),
             vec!["Unknown", "New", "Partially Filled", "Filled"]
@@ -956,35 +1056,44 @@ mod tests {
     #[test]
     fn links_orders_using_order_id_and_cl_ord_id() {
         let mut summary = OrderSummary::new();
-        summary.record_message(&msg(&[
-            ("35", "D"),
-            ("11", "ABC"),
-            ("55", "MSFT"),
-            ("54", "2"),
-            ("38", "50"),
-            ("193", "20250106"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("37", "OID1"),
-            ("11", "ABC"),
-            ("150", "0"),
-            ("39", "0"),
-            ("38", "50"),
-            ("151", "50"),
-            ("75", "20250102"),
-            ("193", "20250106"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("37", "OID1"),
-            ("11", "DEF"),
-            ("41", "ABC"),
-            ("150", "5"),
-            ("39", "5"),
-            ("38", "75"),
-            ("151", "75"),
-        ]));
+        summary.record_message(
+            &msg(&[
+                ("35", "D"),
+                ("11", "ABC"),
+                ("55", "MSFT"),
+                ("54", "2"),
+                ("38", "50"),
+                ("193", "20250106"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "8"),
+                ("37", "OID1"),
+                ("11", "ABC"),
+                ("150", "0"),
+                ("39", "0"),
+                ("38", "50"),
+                ("151", "50"),
+                ("75", "20250102"),
+                ("193", "20250106"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "8"),
+                ("37", "OID1"),
+                ("11", "DEF"),
+                ("41", "ABC"),
+                ("150", "5"),
+                ("39", "5"),
+                ("38", "75"),
+                ("151", "75"),
+            ]),
+            None,
+        );
 
         assert_eq!(summary.orders.len(), 1, "replacements should merge");
         let record = summary.orders.values().next().unwrap();
@@ -1002,19 +1111,20 @@ mod tests {
     #[test]
     fn render_outputs_state_headline() {
         let mut summary = OrderSummary::new();
-        summary.record_message(&msg(&[
-            ("35", "D"),
-            ("11", "XYZ"),
-            ("55", "GBP/USD"),
-            ("54", "1"),
-            ("38", "10"),
-        ]));
-        summary.record_message(&msg(&[
-            ("35", "8"),
-            ("11", "XYZ"),
-            ("150", "4"),
-            ("39", "4"),
-        ]));
+        summary.record_message(
+            &msg(&[
+                ("35", "D"),
+                ("11", "XYZ"),
+                ("55", "GBP/USD"),
+                ("54", "1"),
+                ("38", "10"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[("35", "8"), ("11", "XYZ"), ("150", "4"), ("39", "4")]),
+            None,
+        );
 
         let mut buf = Vec::new();
         summary.render(&mut buf).unwrap();
@@ -1029,20 +1139,66 @@ mod tests {
     #[test]
     fn bn_message_sets_state_and_spot_price() {
         let mut summary = OrderSummary::new();
-        summary.record_message(&msg(&[
-            ("35", "BN"),
-            ("11", "OID1"),
-            ("55", "EUR/USD"),
-            ("54", "1"),
-            ("38", "1000000"),
-            ("31", "1.2345"),
-            ("1036", "1"),
-        ]));
+        summary.record_message(
+            &msg(&[
+                ("35", "BN"),
+                ("11", "OID1"),
+                ("55", "EUR/USD"),
+                ("54", "1"),
+                ("38", "1000000"),
+                ("31", "1.2345"),
+                ("1036", "1"),
+            ]),
+            None,
+        );
 
         let record = summary.orders.get("OID1").expect("bn order captured");
         assert_eq!(record.state_path(), vec!["Accepted"]);
         assert_eq!(record.spot_rate.as_deref(), Some("1.2345"));
         assert!(record.bn_seen, "bn flag should be set");
         assert_eq!(record.bn_exec_amt.as_deref(), Some("1000000"));
+    }
+
+    #[test]
+    fn terminal_status_from_non_exec_report_updates_header() {
+        let mut summary = OrderSummary::new();
+        summary.record_message(
+            &msg(&[
+                ("35", "D"),
+                ("11", "OID1"),
+                ("55", "IBM"),
+                ("54", "1"),
+                ("38", "200"),
+            ]),
+            None,
+        );
+        summary.record_message(
+            &msg(&[
+                ("35", "9"), // Order Cancel Reject, treated as terminal via OrdStatus
+                ("11", "OID1"),
+                ("39", "4"),  // Canceled
+                ("14", "50"), // CumQty
+                ("151", "0"), // LeavesQty
+                ("32", "50"),
+                ("31", "10.00"),
+            ]),
+            None,
+        );
+
+        let record = summary
+            .orders
+            .get("OID1")
+            .or_else(|| summary.completed.iter().find(|r| r.key == "OID1"))
+            .expect("order captured");
+        assert_eq!(
+            record.leaves_qty.as_deref(),
+            Some("0"),
+            "terminal non-8 message should overwrite leaves"
+        );
+        assert_eq!(record.cum_qty.as_deref(), Some("50"));
+        assert_eq!(
+            record.state_path().last().cloned().unwrap_or_default(),
+            "Canceled"
+        );
     }
 }

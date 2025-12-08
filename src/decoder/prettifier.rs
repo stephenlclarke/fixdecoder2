@@ -143,12 +143,8 @@ fn build_tag_order(
     ordered_tags.retain(|tag| {
         if trailer_set.contains(tag) {
             trailer_present.insert(*tag);
-            false
-        } else if canonical_header.contains(tag) {
-            false
-        } else {
-            true
         }
+        !(trailer_set.contains(tag) || canonical_header.contains(tag))
     });
 
     let mut final_order: Vec<u32> = canonical_header.to_vec();
@@ -467,20 +463,27 @@ fn handle_log_line(
 
     if !validation_enabled() {
         if matches.is_empty() {
-            writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
+            if summary.is_none() {
+                writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
+            }
             return Ok(());
         }
 
         let (messages, coloured_line) =
             extract_messages_and_format(line, &matches, display_delimiter);
-        write!(out, "{coloured_line}")?;
-        write!(out, "{separator}")?;
 
         for msg in messages {
             if let Some(ref mut tracker) = summary.as_mut() {
-                tracker.record_message(&msg);
+                tracker.record_message(&msg, fix_override);
             }
-            process_fix_message(&msg, out, separator, fix_override)?;
+            if summary.is_none() {
+                process_fix_message(&msg, out, separator, fix_override)?;
+            }
+        }
+
+        if summary.is_none() {
+            write!(out, "{coloured_line}")?;
+            write!(out, "{separator}")?;
         }
         return Ok(());
     }
@@ -491,7 +494,7 @@ fn handle_log_line(
 
     for (start, end) in &matches {
         if let Some(ref mut tracker) = summary.as_mut() {
-            tracker.record_message(&line[*start..*end]);
+            tracker.record_message(&line[*start..*end], fix_override);
         }
     }
 
