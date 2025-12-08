@@ -11,6 +11,7 @@
 
 # Logs
 fixlog.txt
+*.fix
 
 # Generated artefacts / outputs
 target/
@@ -18,3 +19,4 @@ build_version.env
 src/fix/sensitive.rs
 resources/**/*.xml
 !resources/NOTICE.MD
+ci/__pycache__/

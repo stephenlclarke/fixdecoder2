@@ -3,12 +3,14 @@
 
 use crate::decoder::colours::{disable_colours, palette};
 use crate::decoder::fixparser::{FieldValue, parse_fix};
-use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary};
+use crate::decoder::summary::OrderSummary;
+use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary_with_override};
 use crate::decoder::validator;
 use crate::fix;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::borrow::Cow;
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -97,6 +99,20 @@ fn build_tag_order(
     dict: &FixTagLookup,
     annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
 ) -> Vec<u32> {
+    let trailer_order = {
+        let order = dict.trailer_tags();
+        if order.is_empty() {
+            vec![10u32]
+        } else {
+            order.to_vec()
+        }
+    };
+    let trailer_set: HashSet<u32> = trailer_order.iter().copied().collect();
+    let mut trailer_present: HashSet<u32> = fields
+        .iter()
+        .filter(|f| trailer_set.contains(&f.tag))
+        .map(|f| f.tag)
+        .collect();
     let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
     let message_def: Option<MessageDef> = msg_type
         .as_deref()
@@ -116,17 +132,65 @@ fn build_tag_order(
         }
     };
 
+    // Deduplicate while preserving order to avoid churn when we later reinsert canonical tags.
+    let mut seen = HashSet::new();
+    ordered_tags.retain(|tag| seen.insert(*tag));
+
+    // Ensure canonical header/trailer tags are in sensible positions even if the dictionary omits them.
+    let canonical_header = [8u32, 9, 35, 49, 56, 34, 52];
+
+    // Strip header/trailer from their existing positions so we can place them deterministically.
+    ordered_tags.retain(|tag| {
+        if trailer_set.contains(tag) {
+            trailer_present.insert(*tag);
+            false
+        } else if canonical_header.contains(tag) {
+            false
+        } else {
+            true
+        }
+    });
+
+    let mut final_order: Vec<u32> = canonical_header.to_vec();
+    final_order.extend_from_slice(&ordered_tags);
+
     if let Some(ann) = annotations {
-        let mut missing: Vec<u32> = ann
-            .keys()
-            .filter(|tag| !ordered_tags.contains(tag))
-            .copied()
-            .collect();
+        let mut missing: Vec<u32> = ann.keys().copied().collect();
         missing.sort();
-        ordered_tags.extend(missing);
+        for tag in missing {
+            if trailer_set.contains(&tag) {
+                trailer_present.insert(tag);
+                continue;
+            }
+            if canonical_header.contains(&tag) {
+                continue;
+            }
+            if !final_order.contains(&tag) {
+                final_order.push(tag);
+            }
+        }
     }
 
-    ordered_tags
+    // Append any tags present in the message that were not part of the message definition so
+    // they appear before trailer fields.
+    for field in fields {
+        let tag = field.tag;
+        if trailer_set.contains(&tag) {
+            trailer_present.insert(tag);
+            continue;
+        }
+        if !final_order.contains(&tag) {
+            final_order.push(tag);
+        }
+    }
+
+    for tag in trailer_order {
+        if trailer_present.contains(&tag) && !final_order.contains(&tag) {
+            final_order.push(tag);
+        }
+    }
+
+    final_order
 }
 
 pub fn prettify_files(
@@ -135,22 +199,49 @@ pub fn prettify_files(
     err_out: &mut dyn Write,
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
+    summary: &mut Option<OrderSummary>,
+    fix_override: Option<&str>,
 ) -> i32 {
     let mut had_error = false;
 
     if paths.is_empty() {
-        return handle_stdin(out, err_out, obfuscator, display_delimiter);
+        return handle_stdin(
+            out,
+            err_out,
+            obfuscator,
+            display_delimiter,
+            summary,
+            fix_override,
+        );
     }
 
     for path in paths {
         if path == "-" {
-            if handle_stdin(out, err_out, obfuscator, display_delimiter) != 0 {
+            if handle_stdin(
+                out,
+                err_out,
+                obfuscator,
+                display_delimiter,
+                summary,
+                fix_override,
+            ) != 0
+            {
                 had_error = true;
             }
             continue;
         }
 
-        if handle_file(path, out, err_out, obfuscator, display_delimiter).is_err() {
+        if handle_file(
+            path,
+            out,
+            err_out,
+            obfuscator,
+            display_delimiter,
+            summary,
+            fix_override,
+        )
+        .is_err()
+        {
             had_error = true;
         }
     }
@@ -173,15 +264,20 @@ fn write_field_line(
         colours.tag
     };
     let name = dict.field_name(field.tag);
+    let is_unknown = name.parse::<u32>().ok() == Some(field.tag);
+    let name_coloured = if is_unknown {
+        format!("{}{}{}", colours.error, name, colours.reset)
+    } else {
+        format!("{}{}{}", colours.name, name, colours.reset)
+    };
+    let name_section = format!("{}({}){}", colours.name, name_coloured, colours.reset);
     let desc = dict.enum_description(field.tag, &field.value);
     output.push_str(&format!(
-        "    {}{:4}{} ({}{}{}): {}{}{}",
+        "    {}{:4}{} {}: {}{}{}",
         tag_colour,
         field.tag,
         colours.reset,
-        colours.name,
-        name,
-        colours.reset,
+        name_section,
         colours.value,
         field.value,
         colours.reset
@@ -236,6 +332,8 @@ fn handle_stdin(
     err_out: &mut dyn Write,
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
+    summary: &mut Option<OrderSummary>,
+    fix_override: Option<&str>,
 ) -> i32 {
     obfuscator.reset();
     if !validation_enabled() {
@@ -246,6 +344,8 @@ fn handle_stdin(
         out,
         obfuscator,
         display_delimiter,
+        summary,
+        fix_override,
     )
     .is_err()
     {
@@ -267,6 +367,8 @@ fn handle_file(
     err_out: &mut dyn Write,
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
+    summary: &mut Option<OrderSummary>,
+    fix_override: Option<&str>,
 ) -> io::Result<()> {
     obfuscator.reset();
     let colours = palette();
@@ -280,7 +382,14 @@ fn handle_file(
 
     match File::open(path) {
         Ok(file) => {
-            stream_reader(BufReader::new(file), out, obfuscator, display_delimiter)?;
+            stream_reader(
+                BufReader::new(file),
+                out,
+                obfuscator,
+                display_delimiter,
+                summary,
+                fix_override,
+            )?;
         }
         Err(err) => {
             let _ = writeln!(
@@ -300,6 +409,8 @@ fn stream_reader<R: BufRead>(
     out: &mut dyn Write,
     obfuscator: &fix::Obfuscator,
     display_delimiter: char,
+    summary: &mut Option<OrderSummary>,
+    fix_override: Option<&str>,
 ) -> io::Result<()> {
     let mut line = String::new();
     let colours = palette();
@@ -327,7 +438,15 @@ fn stream_reader<R: BufRead>(
         }
 
         let processed = obfuscator.enabled_line(&line);
-        handle_log_line(&processed, line_number, out, &separator, display_delimiter)?;
+        handle_log_line(
+            &processed,
+            line_number,
+            out,
+            &separator,
+            display_delimiter,
+            summary,
+            fix_override,
+        )?;
     }
 
     Ok(())
@@ -340,6 +459,8 @@ fn handle_log_line(
     out: &mut dyn Write,
     separator: &str,
     display_delimiter: char,
+    summary: &mut Option<OrderSummary>,
+    fix_override: Option<&str>,
 ) -> io::Result<()> {
     let matches = find_fix_message_indices(line);
     let colours = palette();
@@ -356,7 +477,10 @@ fn handle_log_line(
         write!(out, "{separator}")?;
 
         for msg in messages {
-            process_fix_message(&msg, out, separator)?;
+            if let Some(ref mut tracker) = summary.as_mut() {
+                tracker.record_message(&msg);
+            }
+            process_fix_message(&msg, out, separator, fix_override)?;
         }
         return Ok(());
     }
@@ -365,10 +489,16 @@ fn handle_log_line(
         return Ok(());
     }
 
+    for (start, end) in &matches {
+        if let Some(ref mut tracker) = summary.as_mut() {
+            tracker.record_message(&line[*start..*end]);
+        }
+    }
+
     let mut invalid = Vec::new();
     for (start, end) in matches {
         let msg = &line[start..end];
-        let dict = load_dictionary(msg);
+        let dict = load_dictionary_with_override(msg, fix_override);
         let report = validator::validate_fix_message(msg, &dict);
         if report.is_clean() {
             continue;
@@ -462,8 +592,13 @@ fn apply_display_delimiter<'a>(text: &'a str, delimiter: char) -> Cow<'a, str> {
 }
 
 /// Render a single FIX message (and validation errors when enabled) to the output stream.
-fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::Result<()> {
-    let dict = load_dictionary(msg);
+fn process_fix_message(
+    msg: &str,
+    out: &mut dyn Write,
+    separator: &str,
+    fix_override: Option<&str>,
+) -> io::Result<()> {
+    let dict = load_dictionary_with_override(msg, fix_override);
     let pretty = prettify_with_report(msg, &dict, None);
     write!(out, "{pretty}")?;
 
@@ -484,6 +619,23 @@ fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::R
 
 pub fn disable_output_colours() {
     disable_colours();
+}
+
+#[cfg(test)]
+fn test_lookup_with_order(field_order: Vec<u32>) -> FixTagLookup {
+    use std::collections::HashMap;
+
+    let mut messages = HashMap::new();
+    messages.insert(
+        "X".to_string(),
+        MessageDef {
+            _name: "X".to_string(),
+            _msg_type: "X".to_string(),
+            field_order,
+            required: Vec::new(),
+        },
+    );
+    FixTagLookup::new_for_tests(messages)
 }
 
 #[cfg(test)]
@@ -512,11 +664,14 @@ mod tests {
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut summary = None;
         stream_reader(
             BufReader::new(Cursor::new(line)),
             &mut out,
             &obfuscator,
             '|',
+            &mut summary,
+            None,
         )
         .unwrap();
         set_validation(false);
@@ -567,11 +722,14 @@ mod tests {
         );
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut summary = None;
         stream_reader(
             BufReader::new(Cursor::new(line)),
             &mut out,
             &obfuscator,
             '|',
+            &mut summary,
+            None,
         )
         .unwrap();
         set_validation(false);
@@ -592,11 +750,14 @@ mod tests {
         let msg = format!("8=FIX.4.4{SOH}9=005{SOH}10=999{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut summary = None;
         stream_reader(
             BufReader::new(Cursor::new(line)),
             &mut out,
             &obfuscator,
             '|',
+            &mut summary,
+            None,
         )
         .unwrap();
         set_validation(false);
@@ -660,6 +821,75 @@ mod tests {
             pos_55 < pos_10,
             "body tag 55 should appear before checksum: {:?}",
             tags
+        );
+    }
+
+    #[test]
+    fn header_and_trailer_are_repositioned_when_out_of_place() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+
+        let dict = test_lookup_with_order(vec![37, 11, 150, 8, 9, 35, 10]);
+        let fields = vec![
+            FieldValue {
+                tag: 8,
+                value: "FIX.4.4".into(),
+            },
+            FieldValue {
+                tag: 9,
+                value: "100".into(),
+            },
+            FieldValue {
+                tag: 35,
+                value: "X".into(),
+            },
+            FieldValue {
+                tag: 37,
+                value: "ABC".into(),
+            },
+            FieldValue {
+                tag: 150,
+                value: "0".into(),
+            },
+            FieldValue {
+                tag: 553,
+                value: "user".into(),
+            },
+            FieldValue {
+                tag: 10,
+                value: "000".into(),
+            },
+        ];
+
+        let order = build_tag_order(&fields, &dict, None);
+        let header_prefix: Vec<u32> = order.iter().take(7).copied().collect();
+        assert_eq!(
+            header_prefix,
+            vec![8, 9, 35, 49, 56, 34, 52],
+            "canonical header should lead the order"
+        );
+
+        let pos_order_id = order
+            .iter()
+            .position(|t| *t == 37)
+            .expect("body tag should be present");
+        assert!(
+            pos_order_id >= 7,
+            "body tags should follow header: {:?}",
+            order
+        );
+        assert_eq!(
+            order.last(),
+            Some(&10),
+            "checksum must be forced to the end: {:?}",
+            order
+        );
+        let pos_user = order.iter().position(|t| *t == 553).unwrap();
+        let pos_checksum = order.iter().position(|t| *t == 10).unwrap();
+        assert!(
+            pos_user < pos_checksum,
+            "unknown body tags should remain before trailer: {:?}",
+            order
         );
     }
 

@@ -22,6 +22,7 @@ pub struct FixTagLookup {
     field_types: HashMap<u32, String>,
     messages: HashMap<String, MessageDef>,
     repeatable_tags: HashSet<u32>,
+    trailer_order: Vec<u32>,
 }
 
 impl FixTagLookup {
@@ -58,6 +59,17 @@ impl FixTagLookup {
 
         let messages = build_message_defs(&dict.messages, &component_map, &name_to_tag);
         let repeatable_tags = collect_repeatable_tags(&dict.messages, &component_map, &name_to_tag);
+        let mut trailer_order = Vec::new();
+        let mut stack = Vec::new();
+        append_component_fields(
+            "Trailer",
+            &component_map,
+            &name_to_tag,
+            &mut stack,
+            &mut trailer_order,
+            &mut Vec::new(),
+        );
+        dedupe(&mut trailer_order);
 
         FixTagLookup {
             tag_to_name,
@@ -65,6 +77,7 @@ impl FixTagLookup {
             field_types,
             messages,
             repeatable_tags,
+            trailer_order,
         }
     }
 
@@ -95,6 +108,24 @@ impl FixTagLookup {
 
     pub fn is_repeatable(&self, tag: u32) -> bool {
         self.repeatable_tags.contains(&tag)
+    }
+
+    pub fn trailer_tags(&self) -> &[u32] {
+        &self.trailer_order
+    }
+}
+
+#[cfg(test)]
+impl FixTagLookup {
+    pub fn new_for_tests(messages: HashMap<String, MessageDef>) -> Self {
+        FixTagLookup {
+            tag_to_name: HashMap::new(),
+            enum_map: HashMap::new(),
+            field_types: HashMap::new(),
+            messages,
+            repeatable_tags: HashSet::new(),
+            trailer_order: vec![10],
+        }
     }
 }
 
@@ -211,6 +242,21 @@ pub fn load_dictionary(msg: &str) -> Arc<FixTagLookup> {
     get_dictionary(&key)
         .or_else(|| get_dictionary("FIX44"))
         .expect("FIX44 dictionary available")
+}
+
+/// Load a dictionary by explicit schema key (e.g. FIX44), falling back to FIX44 when missing.
+pub fn load_dictionary_for_key(key: &str) -> Arc<FixTagLookup> {
+    get_dictionary(key)
+        .or_else(|| get_dictionary("FIX44"))
+        .expect("FIX44 dictionary available")
+}
+
+/// Load a dictionary, allowing an override schema key to force the selection used for decoding.
+pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> Arc<FixTagLookup> {
+    if let Some(key) = override_key {
+        return load_dictionary_for_key(key);
+    }
+    load_dictionary(msg)
 }
 
 pub fn register_dictionary(key: &str, dict: &FixDictionary) {
@@ -463,5 +509,16 @@ mod tests {
     fn detects_schema_from_default_appl_ver_id() {
         let msg = "8=FIXT.1.1\u{0001}35=D\u{0001}1137=8\u{0001}10=000\u{0001}";
         assert_eq!(detect_schema_key(msg), "FIX50SP1");
+    }
+
+    #[test]
+    fn load_dictionary_respects_override_key() {
+        let msg = "8=FIX.4.2\u{0001}35=D\u{0001}10=000\u{0001}";
+        let direct = load_dictionary_for_key("FIX50");
+        let overridden = load_dictionary_with_override(msg, Some("FIX50"));
+        assert!(
+            Arc::ptr_eq(&direct, &overridden),
+            "override should select the explicit dictionary key"
+        );
     }
 }

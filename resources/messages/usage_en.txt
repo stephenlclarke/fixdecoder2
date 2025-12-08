@@ -21,8 +21,9 @@ Command line option examples:
     $ fixdecoder --info
 
   Prettify FIX log files with optional validation and obfuscation if output is piped then colour is disabled by default but can be forced on with --colour=yes:
-    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--delimiter=CHAR] [file1.log file2.log ...]
+    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--summary] [--fix=VER] [--delimiter=CHAR] [file1.log file2.log ...]
 
-    $ fixdecoder --validate --secret logs/fix.log
-    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' | less
+    $ fixdecoder --validate --secret --summary logs/fix.log
+    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' --summary | less
+    $ fixdecoder --fix=44 trades.log   (forces FIX44 decoding instead of auto-detect)
     $ tail -f logs/fix.log | fixdecoder --validate\n"

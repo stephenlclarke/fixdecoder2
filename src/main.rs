@@ -21,7 +21,7 @@ use decoder::{
     DisplayStyle, FixDictionary, disable_output_colours, display_component, display_message,
     list_all_components, list_all_messages, list_all_tags, prettify_files, print_component_columns,
     print_message_columns, print_tag_details, print_tags_in_columns, register_fix_dictionary,
-    schema::SchemaTree, set_validation,
+    schema::SchemaTree, set_validation, summary::OrderSummary,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -147,6 +147,11 @@ fn run() -> Result<i32> {
         opts.files.clone()
     };
 
+    let mut summary = opts.summary.then(OrderSummary::new);
+    let fix_override = opts
+        .fix_from_user
+        .then(|| normalise_fix_key(&opts.fix_version))
+        .flatten();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
     let code = prettify_files(
@@ -155,7 +160,14 @@ fn run() -> Result<i32> {
         &mut stderr,
         &obfuscator,
         opts.delimiter,
+        &mut summary,
+        fix_override.as_deref(),
     );
+
+    if let Some(ref summary) = summary {
+        summary.render(&mut stdout)?;
+    }
+
     Ok(code)
 }
 
@@ -241,6 +253,12 @@ fn build_cli() -> Command {
             .action(ArgAction::Append)
             .trailing_var_arg(true),
     )
+    .arg(
+        Arg::new("summary")
+            .long("summary")
+            .action(ArgAction::SetTrue)
+            .help("Track order state across messages and print a summary"),
+    )
 }
 
 /// Add a `--name[=VALUE]` argument that can be used with or without a value (defaulting to “true”).
@@ -296,6 +314,7 @@ struct CliOptions {
     validate: bool,
     colour: Option<bool>,
     show_version: bool,
+    summary: bool,
     files: Vec<String>,
     delimiter: char,
 }
@@ -339,6 +358,7 @@ impl CliOptions {
             validate: matches.get_flag("validate"),
             colour: parse_colour(matches.get_one::<String>("colour"))?,
             show_version: matches.get_flag("version"),
+            summary: matches.get_flag("summary"),
             files,
             delimiter: parse_delimiter(matches.get_one::<String>("delimiter"))?,
         })
@@ -862,6 +882,7 @@ mod tests {
             validate: false,
             colour: None,
             show_version: false,
+            summary: false,
             files: Vec::new(),
             delimiter: '\u{0001}',
         }

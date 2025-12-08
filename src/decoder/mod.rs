@@ -6,6 +6,7 @@ pub mod display;
 pub mod fixparser;
 pub mod prettifier;
 pub mod schema;
+pub mod summary;
 pub mod tag_lookup;
 pub mod validator;
 
