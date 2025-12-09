@@ -179,6 +179,18 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Compute lockfile hash
+        id: lockfile-hash
+        run: echo "hash=$(sha256sum Cargo.lock | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust toolchain for Clippy
+        uses: actions/cache@v4
+        with:
+          path: |
+            /github/home/.cargo/bin
+            /github/home/.rustup
+          key: sonar-rust-${{ runner.os }}-${{ steps.lockfile-hash.outputs.hash }}
+          restore-keys: |
+            sonar-rust-${{ runner.os }}-
       - name: Download coverage artifact
         uses: actions/download-artifact@v4
         with:
@@ -186,9 +198,12 @@ jobs:
           path: target/coverage
       - name: Install Rust (for Clippy sensor)
         run: |
-          apt-get update && apt-get install -y curl ca-certificates build-essential
-          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          if ! command -v cargo >/dev/null 2>&1; then
+            apt-get update && apt-get install -y curl ca-certificates build-essential
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          fi
           "$HOME/.cargo/bin/rustup" component add clippy
       - name: Run sonar-scanner
         run: sonar-scanner
