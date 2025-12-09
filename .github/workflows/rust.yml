@@ -195,6 +195,10 @@ jobs:
           tool: cargo-audit
       - name: Run scan and coverage (includes audit conversion)
         run: make scan coverage
+      - name: Export clippy report for Sonar
+        run: |
+          mkdir -p target
+          cargo clippy --all-targets --message-format=json -- -D warnings > target/clippy.json || true
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -206,6 +210,12 @@ jobs:
         with:
           name: sonar-generic-issues
           path: target/coverage/sonar-generic-issues.json
+          if-no-files-found: warn
+      - name: Upload clippy report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: clippy-json
+          path: target/clippy.json
           if-no-files-found: warn
 
   sonar:
@@ -249,6 +259,11 @@ jobs:
         with:
           name: sonar-generic-issues
           path: target/coverage
+      - name: Download clippy report artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: clippy-json
+          path: target
       - name: Install Rust (for Clippy sensor)
         run: |
           CARGO_HOME="${HOME}/.cargo"
@@ -267,7 +282,8 @@ jobs:
           ensure_sonar_scanner
           sonar-scanner \
             -Dsonar.host.url=https://sonarcloud.io \
-            -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json
+            -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
+            -Dsonar.rust.clippy.reportPaths=target/clippy.json
 
   release:
     name: Publish Release
