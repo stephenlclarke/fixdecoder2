@@ -24,8 +24,23 @@ update-readme:
 	@python3 ci/update_readme.py
 
 scan: prepare
-	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings'
-	@command -v cargo-audit >/dev/null 2>&1 && cargo audit || echo "cargo-audit not installed; skipping security scan"
+	@bash -lc '\
+		source $(CI_SCRIPT) && \
+		ensure_build_metadata && \
+		cargo fmt --all --check && \
+		cargo clippy --all-targets -- -D warnings && \
+		mkdir -p target/coverage && \
+		if command -v cargo-audit >/dev/null 2>&1; then \
+			echo "Running cargo-audit (text output)"; \
+			cargo audit || true; \
+			echo "Running cargo-audit (JSON) → target/coverage/rustsec.json"; \
+			cargo audit --json > target/coverage/rustsec.json || true; \
+			echo "Converting RustSec report to Sonar generic issues (target/coverage/sonar-generic-issues.json)"; \
+			python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json || true; \
+		else \
+			echo "cargo-audit not installed; skipping security scan"; \
+		fi \
+	'
 
 coverage: build
 	@bash -lc '\
@@ -38,11 +53,14 @@ coverage: build
 		  --output-path target/coverage/coverage.xml \
 	'
 
-sonar: coverage
+sonar:
 	@bash -lc '\
 		source $(CI_SCRIPT) && \
+		if [[ -z "$$(echo "$(MAKECMDGOALS)" | grep -E "(^| )scan( |$$)|(^| )coverage( |$$)")" ]]; then \
+			$(MAKE) scan coverage; \
+		fi; \
 		ensure_sonar_scanner && \
-		sonar-scanner \
+		sonar-scanner -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
 	'
 
 release:
@@ -51,43 +69,35 @@ release:
 		echo "python3 (or python) is required for release bumping." >&2; \
 		exit 1; \
 	fi; \
-	cur=$$($$py - <<'PY' \
-import re, sys, pathlib \
-toml = pathlib.Path("Cargo.toml").read_text() \
-m = re.search(r'^version\\s*=\\s*"([0-9]+\\.[0-9]+\\.[0-9]+)"', toml, re.M) \
-print(m.group(1) if m else "") \
-PY \
-	); \
-	if [ -z "$$cur" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
-	next=$$($$py - <<'PY' "$$cur" \
-import sys \
-major, minor, patch = map(int, sys.argv[1].split(".")) \
-patch += 1 \
-print(f"{major}.{minor}.{patch}") \
-PY \
-	); \
+	ver=$$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/'); \
+	if [ -z "$$ver" ]; then echo "Could not read version from Cargo.toml" >&2; exit 1; fi; \
+	next="$$ver"; \
+	while git rev-parse "v$${next}" >/dev/null 2>&1; do \
+		next=$$($$py ci/next_patch.py "$${next}"); \
+	done; \
 	if ! git diff --quiet || ! git diff --cached --quiet; then \
 		echo "Working tree is not clean; commit or stash changes before tagging." >&2; \
 		exit 1; \
 	fi; \
-	if git rev-parse "v$$next" >/dev/null 2>&1; then \
-		echo "Tag v$$next already exists; aborting." >&2; \
-		exit 1; \
-	fi; \
-	$$py - <<'PY' "$$cur" "$$next" \
-import pathlib, re, sys \
-cur, new = sys.argv[1], sys.argv[2] \
-path = pathlib.Path("Cargo.toml") \
-text = path.read_text() \
-text = re.sub(r'^version\\s*=\\s*"' + re.escape(cur) + r'"', f'version = "{new}"', text, count=1, flags=re.M) \
-path.write_text(text) \
-PY \
-	; \
-	echo "Bumped version: $$cur -> $$next"; \
-	git add Cargo.toml; \
+	cleanup() { \
+		rc=$$?; \
+		if [ $$rc -ne 0 ]; then \
+			echo "Release failed; restoring Cargo.toml/Cargo.lock" >&2; \
+			git restore --staged Cargo.toml Cargo.lock >/dev/null 2>&1 || true; \
+			git restore Cargo.toml Cargo.lock >/dev/null 2>&1 || true; \
+		fi; \
+		exit $$rc; \
+	}; \
+	trap 'cleanup' EXIT; \
+	$$py ci/bump_version.py "$$ver" "$$next" || exit 1; \
+	echo "Bumped version: $$ver -> $$next"; \
+	if [ -f Cargo.lock ]; then git add Cargo.toml Cargo.lock; else git add Cargo.toml; fi; \
 	git commit -m "chore(release): v$$next"; \
 	git tag -a "v$$next" -m "Release v$$next"; \
-	echo "Created tag v$$next"
+	git push origin HEAD; \
+	git push origin "v$$next"; \
+	echo "Created and pushed tag v$$next"; \
+	trap - EXIT
 
 clean:
 	@cargo clean

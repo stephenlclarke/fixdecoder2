@@ -34,6 +34,10 @@ function cmd_setup_environment() {
     # Avoid inheriting target-specific RUSTFLAGS (e.g., musl + crt-static) that break proc-macro builds.
     RUSTFLAGS="" cargo install cargo-llvm-cov --locked --quiet
   fi
+  if ! command -v cargo-audit >/dev/null 2>&1; then
+    log ">> Installing cargo-audit"
+    cargo install cargo-audit --locked --quiet
+  fi
   setup_done=true
 }
 

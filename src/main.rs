@@ -56,7 +56,13 @@ fn branch() -> &'static str {
 /// Determine the short Git commit that went into the binary.  We rely on CI
 /// to provide this, but fall back to a recognisable placeholder.
 fn sha() -> &'static str {
-    option_env!("FIXDECODER_COMMIT").unwrap_or("0000000")
+    static SHORT_SHA: OnceLock<String> = OnceLock::new();
+    SHORT_SHA
+        .get_or_init(|| {
+            let raw = option_env!("FIXDECODER_COMMIT").unwrap_or("0000000");
+            raw.get(0..7).unwrap_or(raw).to_string()
+        })
+        .as_str()
 }
 
 /// Determine the Git remote that best describes the source tree.  Useful
@@ -132,7 +138,6 @@ fn run() -> Result<i32> {
     let opts = CliOptions::from_matches(&matches)?;
 
     if opts.show_version {
-        print_git_clone();
         return Ok(0);
     }
 
@@ -616,8 +621,13 @@ fn find_message<'a>(
         .or_else(|| schema.messages.values().find(|m| m.msg_type == query))
 }
 
+fn print_version_banner() {
+    println!("{}", version_string());
+    print_git_clone();
+}
+
 fn print_git_clone() {
-    println!("  git clone {}", git_url());
+    println!("  git clone {}\n", git_url());
 }
 /// Print the condensed usage guide.  Kept in one function so we can reuse it
 /// whenever argument parsing fails.

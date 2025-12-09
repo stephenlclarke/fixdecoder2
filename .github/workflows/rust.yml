@@ -10,6 +10,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   dictionaries:
     name: Prepare FIX specs
@@ -27,7 +30,7 @@ jobs:
           path: resources
 
   build-matrix:
-    name: Build release (${{ matrix.target }})
+    name: Build release (tags only)
     strategy:
       fail-fast: true
       matrix:
@@ -35,16 +38,29 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_path: target/aarch64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-arm64
+            ext: ""
           - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_path: target/x86_64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-x86_64
+            ext: ""
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_path: target/x86_64-pc-windows-msvc/release/fixdecoder.exe
+            asset_suffix: windows-x86_64
+            ext: ".exe"
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_path: target/x86_64-unknown-linux-gnu/release/fixdecoder
+            asset_suffix: linux-gnu-x86_64
+            ext: ""
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             setup: sudo apt-get update && sudo apt-get install -y musl-tools
             artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
+            asset_suffix: linux-musl-x86_64
+            ext: ""
     runs-on: ${{ matrix.os }}
     needs: [dictionaries]
     # Only build release artifacts when tagging; skips lint/coverage.
@@ -107,11 +123,16 @@ jobs:
           cargo build --release --target ${{ matrix.target }}
         env:
           RUSTFLAGS: ""
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.artifact_path }}" "dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: fixdecoder-${{ matrix.target }}
-          path: ${{ matrix.artifact_path }}
+          name: fixdecoder-${{ matrix.asset_suffix }}
+          path: dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}
 
   quality:
     name: Lint & Coverage
@@ -119,8 +140,6 @@ jobs:
     needs: dictionaries
     # Run on branch pushes for fast feedback (debug build + coverage); skip tags.
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
@@ -157,7 +176,7 @@ jobs:
       - name: Ensure make is installed (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y make
-      - name: Run scan and coverage
+      - name: Run scan and coverage (includes audit conversion)
         run: make scan coverage
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
@@ -165,18 +184,19 @@ jobs:
           name: coverage-xml
           path: target/coverage/coverage.xml
           if-no-files-found: error
+      - name: Upload sonar issues artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonar-generic-issues
+          path: target/coverage/sonar-generic-issues.json
+          if-no-files-found: warn
 
   sonar:
     name: Sonar (coverage import)
     runs-on: ubuntu-latest
-    needs: quality
+    needs: [quality]
     # Run for branch pushes (not tags) when a token is available.
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
-    container:
-      image: sonarsource/sonar-scanner-cli:latest
-      options: --user root
-    env:
-      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - name: Determine toolchain channel
@@ -217,7 +237,14 @@ jobs:
           fi
           "$HOME/.cargo/bin/rustup" component add clippy
       - name: Run sonar-scanner
-        run: sonar-scanner
+        uses: sonarsource/sonarcloud-github-action@v2.1.0
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: >
+            -Dsonar.host.url=https://sonarcloud.io
+            -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json
 
   release:
     name: Publish Release
@@ -240,14 +267,18 @@ jobs:
       - name: Rename artifacts with version
         run: |
           ver="${{ steps.version.outputs.version }}"
-          cd dist
-          for f in *; do
-            case "$f" in
-              *.exe)
-                mv "$f" "fixdecoder-${ver}-${f}"
+          shopt -s nullglob
+          for f in dist/fixdecoder-*; do
+            base="${f##*/}"
+            case "$base" in
+              fixdecoder-*.exe)
+                suffix="${base#fixdecoder-}"
+                suffix="${suffix%.exe}"
+                mv "$f" "dist/fixdecoder-${ver}.${suffix}.exe"
                 ;;
-              fixdecoder*)
-                mv "$f" "fixdecoder-${ver}-${f#fixdecoder-}"
+              fixdecoder-*)
+                suffix="${base#fixdecoder-}"
+                mv "$f" "dist/fixdecoder-${ver}.${suffix}"
                 ;;
             esac
           done
