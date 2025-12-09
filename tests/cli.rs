@@ -60,9 +60,7 @@ fn summary_mode_outputs_order_summary() {
         .assert()
         .success()
         .stdout(
-            contains("Order Summary")
-                .and(contains("open=").or(contains("filled=")))
-                .and(contains("Execution Report").or(contains("EXECUTION"))),
+            contains("Order Summary").and(contains("Execution Report").or(contains("EXECUTION"))),
         );
 }
 

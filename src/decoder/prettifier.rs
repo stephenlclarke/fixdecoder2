@@ -662,6 +662,9 @@ fn emit_messages(
 }
 
 fn render_summary_footer(ctx: &mut PrettifyContext) -> io::Result<()> {
+    if !ctx.live_status_enabled {
+        return Ok(());
+    }
     if let Some(ref mut tracker) = ctx.summary.as_mut() {
         if ctx.follow {
             let _printed = tracker.render_completed(ctx.out)?;
