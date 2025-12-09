@@ -199,6 +199,9 @@ jobs:
         run: |
           mkdir -p target
           cargo clippy --all-targets --message-format=json -- -D warnings > target/clippy.json || true
+          if [ ! -s target/clippy.json ]; then
+            echo "[]" > target/clippy.json
+          fi
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
         with:
@@ -280,6 +283,9 @@ jobs:
         run: |
           source ci/ci_helper.sh
           ensure_sonar_scanner
+          if [ ! -s target/clippy.json ]; then
+            echo "[]" > target/clippy.json
+          fi
           sonar-scanner \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
