@@ -233,17 +233,21 @@ jobs:
           name: sonar-generic-issues
           path: target/coverage
       - name: Install Rust (for Clippy sensor)
+        env:
+          CARGO_HOME: /github/home/.cargo
+          RUSTUP_HOME: /github/home/.rustup
         run: |
-          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          if ! command -v cargo >/dev/null 2>&1; then
-            apt-get update && apt-get install -y curl ca-certificates build-essential
-            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${{ steps.toolchain-id.outputs.toolchain }}
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-          fi
-          "$HOME/.cargo/bin/rustup" component add clippy
+          mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          apt-get update && apt-get install -y curl ca-certificates build-essential
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${{ steps.toolchain-id.outputs.toolchain }}
+          "$CARGO_HOME/bin/rustup" component add clippy
       - name: Run sonar-scanner
         uses: sonarsource/sonarcloud-github-action@v2.1.0
         env:
+          CARGO_HOME: /github/home/.cargo
+          RUSTUP_HOME: /github/home/.rustup
+          PATH: /github/home/.cargo/bin:/usr/local/bin:/usr/bin:/bin
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
