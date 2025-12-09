@@ -22,6 +22,7 @@ pub struct OrderSummary {
     terminal_orders: usize,
     footer_width: usize,
     fix_override_key: Option<String>,
+    display_delimiter: char,
 }
 
 #[derive(Debug, Clone)]
@@ -62,6 +63,7 @@ struct OrderRecord {
     bn_seen: bool,
     bn_exec_amt: Option<String>,
     events: Vec<OrderEvent>,
+    messages: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -84,8 +86,11 @@ struct OrderEvent {
 }
 
 impl OrderSummary {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(display_delimiter: char) -> Self {
+        Self {
+            display_delimiter,
+            ..Self::default()
+        }
     }
 
     pub fn record_message(&mut self, msg: &str, fix_override: Option<&str>) {
@@ -138,6 +143,9 @@ impl OrderSummary {
 
         let event = OrderEvent::from_fields(&map, &dict);
         record.events.push(event);
+        record
+            .messages
+            .push(display_with_delimiter(msg, self.display_delimiter));
 
         if record.is_terminal() {
             self.completed.push(record.clone());
@@ -160,6 +168,7 @@ impl OrderSummary {
 
         for record in &self.completed {
             self.render_record(out, record)?;
+            self.render_messages(out, record)?;
         }
 
         for key in keys {
@@ -188,6 +197,7 @@ impl OrderSummary {
         }
         for record in &self.completed {
             self.render_record(out, record)?;
+            self.render_messages(out, record)?;
         }
         self.clear_override_cache();
         self.completed.clear();
@@ -207,6 +217,19 @@ impl OrderSummary {
         write!(out, "\r{}{pad}", line)?;
         out.flush()?;
         self.footer_width = width;
+        Ok(())
+    }
+
+    fn render_messages(&self, out: &mut dyn Write, record: &OrderRecord) -> std::io::Result<()> {
+        if record.messages.is_empty() || !record.is_terminal() {
+            return Ok(());
+        }
+        let colours = palette();
+        writeln!(out, "    {}Raw FIX messages:{}", colours.tag, colours.reset)?;
+        for msg in &record.messages {
+            writeln!(out, "      {}{}{}", colours.line, msg, colours.reset)?;
+        }
+        writeln!(out)?;
         Ok(())
     }
 
@@ -464,6 +487,7 @@ impl OrderRecord {
             ord_type_code: None,
             tif_code: None,
             events: Vec::new(),
+            messages: Vec::new(),
         }
     }
 
@@ -903,6 +927,16 @@ fn format_tenor(colours: crate::decoder::colours::ColourPalette, diff: Option<i6
     )
 }
 
+fn display_with_delimiter(msg: &str, delimiter: char) -> String {
+    const SOH: char = '\u{0001}';
+    if delimiter == SOH {
+        return msg.to_string();
+    }
+    msg.chars()
+        .map(|c| if c == SOH { delimiter } else { c })
+        .collect()
+}
+
 fn pad_ansi(text: &str, width: usize) -> String {
     let visible = visible_width(text);
     if visible >= width {
@@ -1037,7 +1071,7 @@ mod tests {
 
     #[test]
     fn collects_states_for_single_order() {
-        let mut summary = OrderSummary::new();
+        let mut summary = OrderSummary::new('\u{0001}');
         summary.record_message(
             &msg(&[
                 ("35", "D"),
@@ -1119,7 +1153,7 @@ mod tests {
 
     #[test]
     fn links_orders_using_order_id_and_cl_ord_id() {
-        let mut summary = OrderSummary::new();
+        let mut summary = OrderSummary::new('\u{0001}');
         summary.record_message(
             &msg(&[
                 ("35", "D"),
@@ -1174,7 +1208,7 @@ mod tests {
 
     #[test]
     fn render_outputs_state_headline() {
-        let mut summary = OrderSummary::new();
+        let mut summary = OrderSummary::new('\u{0001}');
         summary.record_message(
             &msg(&[
                 ("35", "D"),
@@ -1202,7 +1236,7 @@ mod tests {
 
     #[test]
     fn bn_message_sets_state_and_spot_price() {
-        let mut summary = OrderSummary::new();
+        let mut summary = OrderSummary::new('\u{0001}');
         summary.record_message(
             &msg(&[
                 ("35", "BN"),
@@ -1229,7 +1263,7 @@ mod tests {
 
     #[test]
     fn terminal_status_from_non_exec_report_updates_header() {
-        let mut summary = OrderSummary::new();
+        let mut summary = OrderSummary::new('\u{0001}');
         summary.record_message(
             &msg(&[
                 ("35", "D"),

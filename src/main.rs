@@ -159,7 +159,7 @@ fn run() -> Result<i32> {
         opts.files.clone()
     };
 
-    let mut summary = opts.summary.then(OrderSummary::new);
+    let mut summary = opts.summary.then(|| OrderSummary::new(opts.delimiter));
     let fix_override = opts
         .fix_from_user
         .then(|| normalise_fix_key(&opts.fix_version))
@@ -174,6 +174,7 @@ fn run() -> Result<i32> {
         summary: &mut summary,
         fix_override: fix_override.as_deref(),
         follow: opts.follow,
+        live_status_enabled: atty::is(Stream::Stdout),
         validation_enabled: opts.validate,
         message_counts: std::collections::HashMap::new(),
         counts_dirty: false,

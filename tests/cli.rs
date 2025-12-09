@@ -44,7 +44,7 @@ fn decodes_message_from_file_path() {
         .arg(file.path())
         .assert()
         .success()
-        .stdout(contains("Processing:").and(contains("BeginString")));
+        .stdout(contains("BeginString"));
 }
 
 #[test]

@@ -25,6 +25,7 @@ pub struct PrettifyContext<'a> {
     pub summary: &'a mut Option<OrderSummary>,
     pub fix_override: Option<&'a str>,
     pub follow: bool,
+    pub live_status_enabled: bool,
     pub validation_enabled: bool,
     pub message_counts: HashMap<String, MsgTypeCount>,
     pub counts_dirty: bool,
@@ -383,14 +384,16 @@ fn write_missing_line(
 /// Handle decoding from stdin (used when no file paths are provided).
 fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
     ctx.obfuscator.reset();
-    if !ctx.validation_enabled {
+    if !ctx.validation_enabled && ctx.live_status_enabled {
         let _ = writeln!(ctx.out, "Processing: (stdin)\n");
     }
     loop {
         let res = stream_reader(BufReader::new(io::stdin().lock()), ctx);
         match res {
             Ok(_) if ctx.follow => {
-                let _ = print_message_counts(ctx);
+                if ctx.counts_dirty && ctx.live_status_enabled {
+                    let _ = print_message_counts(ctx);
+                }
                 if ctx.interrupted.load(Ordering::Relaxed) {
                     return 0;
                 }
@@ -415,7 +418,7 @@ fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
 fn handle_file(path: &str, ctx: &mut PrettifyContext) -> io::Result<()> {
     ctx.obfuscator.reset();
     let colours = palette();
-    if !ctx.validation_enabled {
+    if !ctx.validation_enabled && ctx.live_status_enabled {
         let _ = writeln!(
             ctx.out,
             "Processing: {}{}{}\n",
@@ -435,7 +438,7 @@ fn handle_file(path: &str, ctx: &mut PrettifyContext) -> io::Result<()> {
             if !read_any {
                 std::thread::sleep(std::time::Duration::from_millis(250));
             }
-            if ctx.counts_dirty {
+            if ctx.counts_dirty && ctx.live_status_enabled {
                 let _ = print_message_counts(ctx);
             }
         },
@@ -818,6 +821,7 @@ mod tests {
             summary: &mut summary,
             fix_override: None,
             follow: false,
+            live_status_enabled: true,
             validation_enabled: true,
             message_counts: HashMap::new(),
             counts_dirty: false,
@@ -880,6 +884,7 @@ mod tests {
             summary: &mut summary,
             fix_override: None,
             follow: false,
+            live_status_enabled: true,
             validation_enabled: true,
             message_counts: HashMap::new(),
             counts_dirty: false,
@@ -912,6 +917,7 @@ mod tests {
             summary: &mut summary,
             fix_override: None,
             follow: false,
+            live_status_enabled: true,
             validation_enabled: true,
             message_counts: HashMap::new(),
             counts_dirty: false,
