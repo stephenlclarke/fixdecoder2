@@ -261,9 +261,6 @@ jobs:
       - name: Run sonar-scanner
         uses: sonarsource/sonarcloud-github-action@v2.1.0
         env:
-          CARGO_HOME: /github/home/.cargo
-          RUSTUP_HOME: /github/home/.rustup
-          PATH: /github/home/.cargo/bin:/usr/local/bin:/usr/bin:/bin
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
