@@ -174,7 +174,7 @@ impl OrderSummary {
             return Ok(false);
         }
         if self.footer_width > 0 {
-            write!(out, "\r{}{}", " ".repeat(self.footer_width), "\r")?;
+            write!(out, "\r{}\r", " ".repeat(self.footer_width))?;
         }
         for record in &self.completed {
             self.render_record(out, record)?;
@@ -451,8 +451,8 @@ impl OrderRecord {
     }
 
     fn is_terminal(&self) -> bool {
-        if let Some(state) = self.state_path().last() {
-            if matches!(
+        if let Some(state) = self.state_path().last()
+            && matches!(
                 state.as_str(),
                 "Filled"
                     | "Canceled"
@@ -462,9 +462,9 @@ impl OrderRecord {
                     | "Stopped"
                     | "Suspended"
                     | "Calculated"
-            ) {
-                return true;
-            }
+            )
+        {
+            return true;
         }
 
         if let Some(exec_ack) = self

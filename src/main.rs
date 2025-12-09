@@ -18,12 +18,11 @@ use atty::Stream;
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
-use ctrlc;
 use decoder::{
-    DisplayStyle, FixDictionary, disable_output_colours, display_component, display_message,
-    list_all_components, list_all_messages, list_all_tags, prettify_files, print_component_columns,
-    print_message_columns, print_tag_details, print_tags_in_columns, register_fix_dictionary,
-    schema::SchemaTree, set_validation, summary::OrderSummary, tag_lookup,
+    DisplayStyle, FixDictionary, PrettifyContext, disable_output_colours, display_component,
+    display_message, list_all_components, list_all_messages, list_all_tags, prettify_files,
+    print_component_columns, print_message_columns, print_tag_details, print_tags_in_columns,
+    register_fix_dictionary, schema::SchemaTree, set_validation, summary::OrderSummary, tag_lookup,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -168,16 +167,16 @@ fn run() -> Result<i32> {
         .flatten();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    let code = prettify_files(
-        &files,
-        &mut stdout,
-        &mut stderr,
-        &obfuscator,
-        opts.delimiter,
-        &mut summary,
-        fix_override.as_deref(),
-        opts.follow,
-    );
+    let mut ctx = PrettifyContext {
+        out: &mut stdout,
+        err_out: &mut stderr,
+        obfuscator: &obfuscator,
+        display_delimiter: opts.delimiter,
+        summary: &mut summary,
+        fix_override: fix_override.as_deref(),
+        follow: opts.follow,
+    };
+    let code = prettify_files(&files, &mut ctx);
 
     if tag_lookup::override_warn_triggered() {
         let colours = colours::palette();

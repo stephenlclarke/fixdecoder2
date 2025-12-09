@@ -18,6 +18,17 @@ use terminal_size::{Width, terminal_size};
 
 static VALIDATION_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Shared context for prettification to keep function signatures concise.
+pub struct PrettifyContext<'a> {
+    pub out: &'a mut dyn Write,
+    pub err_out: &'a mut dyn Write,
+    pub obfuscator: &'a fix::Obfuscator,
+    pub display_delimiter: char,
+    pub summary: &'a mut Option<OrderSummary>,
+    pub fix_override: Option<&'a str>,
+    pub follow: bool,
+}
+
 static FIX_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"8=FIX.*?10=\d{3}\u{0001}").expect("valid regex"));
 
@@ -189,59 +200,22 @@ fn build_tag_order(
     final_order
 }
 
-pub fn prettify_files(
-    paths: &[String],
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-    summary: &mut Option<OrderSummary>,
-    fix_override: Option<&str>,
-    follow: bool,
-) -> i32 {
+pub fn prettify_files(paths: &[String], ctx: &mut PrettifyContext) -> i32 {
     let mut had_error = false;
 
     if paths.is_empty() {
-        return handle_stdin(
-            out,
-            err_out,
-            obfuscator,
-            display_delimiter,
-            summary,
-            fix_override,
-            follow,
-        );
+        return handle_stdin(ctx);
     }
 
     for path in paths {
         if path == "-" {
-            if handle_stdin(
-                out,
-                err_out,
-                obfuscator,
-                display_delimiter,
-                summary,
-                fix_override,
-                follow,
-            ) != 0
-            {
+            if handle_stdin(ctx) != 0 {
                 had_error = true;
             }
             continue;
         }
 
-        if handle_file(
-            path,
-            out,
-            err_out,
-            obfuscator,
-            display_delimiter,
-            summary,
-            fix_override,
-            follow,
-        )
-        .is_err()
-        {
+        if handle_file(path, ctx).is_err() {
             had_error = true;
         }
     }
@@ -327,31 +301,15 @@ fn write_missing_line(
 }
 
 /// Handle decoding from stdin (used when no file paths are provided).
-fn handle_stdin(
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-    summary: &mut Option<OrderSummary>,
-    fix_override: Option<&str>,
-    follow: bool,
-) -> i32 {
-    obfuscator.reset();
+fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
+    ctx.obfuscator.reset();
     if !validation_enabled() {
-        let _ = writeln!(out, "Processing: (stdin)\n");
+        let _ = writeln!(ctx.out, "Processing: (stdin)\n");
     }
     loop {
-        let res = stream_reader(
-            BufReader::new(io::stdin().lock()),
-            out,
-            obfuscator,
-            display_delimiter,
-            summary,
-            fix_override,
-            follow,
-        );
+        let res = stream_reader(BufReader::new(io::stdin().lock()), ctx);
         match res {
-            Ok(_) if follow => {
+            Ok(_) if ctx.follow => {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 continue;
             }
@@ -359,7 +317,7 @@ fn handle_stdin(
             Err(_) => {
                 let colours = palette();
                 let _ = writeln!(
-                    err_out,
+                    ctx.err_out,
                     "{}Error reading input{}",
                     colours.error, colours.reset
                 );
@@ -370,21 +328,12 @@ fn handle_stdin(
 }
 
 /// Handle decoding from a single file path, printing progress when validation is disabled.
-fn handle_file(
-    path: &str,
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-    summary: &mut Option<OrderSummary>,
-    fix_override: Option<&str>,
-    follow: bool,
-) -> io::Result<()> {
-    obfuscator.reset();
+fn handle_file(path: &str, ctx: &mut PrettifyContext) -> io::Result<()> {
+    ctx.obfuscator.reset();
     let colours = palette();
     if !validation_enabled() {
         let _ = writeln!(
-            out,
+            ctx.out,
             "Processing: {}{}{}\n",
             colours.file, path, colours.reset
         );
@@ -392,16 +341,8 @@ fn handle_file(
 
     match File::open(path) {
         Ok(file) => loop {
-            let read_any = stream_reader(
-                BufReader::new(file.try_clone()?),
-                out,
-                obfuscator,
-                display_delimiter,
-                summary,
-                fix_override,
-                follow,
-            )?;
-            if !follow {
+            let read_any = stream_reader(BufReader::new(file.try_clone()?), ctx)?;
+            if !ctx.follow {
                 break;
             }
             if !read_any {
@@ -410,7 +351,7 @@ fn handle_file(
         },
         Err(err) => {
             let _ = writeln!(
-                err_out,
+                ctx.err_out,
                 "{}Cannot open file: {}{}",
                 colours.error, err, colours.reset
             );
@@ -421,15 +362,7 @@ fn handle_file(
 }
 
 /// Stream lines from a reader, emitting formatted FIX messages (and optionally validation output).
-fn stream_reader<R: BufRead>(
-    mut reader: R,
-    out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-    summary: &mut Option<OrderSummary>,
-    fix_override: Option<&str>,
-    follow: bool,
-) -> io::Result<bool> {
+fn stream_reader<R: BufRead>(mut reader: R, ctx: &mut PrettifyContext) -> io::Result<bool> {
     let mut line = String::new();
     let colours = palette();
     let separator = format!(
@@ -446,7 +379,7 @@ fn stream_reader<R: BufRead>(
         let bytes = match reader.read_line(&mut line) {
             Ok(n) => n,
             Err(e) => {
-                if !follow {
+                if !ctx.follow {
                     return Err(e);
                 }
                 std::thread::sleep(std::time::Duration::from_millis(250));
@@ -454,7 +387,7 @@ fn stream_reader<R: BufRead>(
             }
         };
         if bytes == 0 {
-            if follow {
+            if ctx.follow {
                 std::thread::sleep(std::time::Duration::from_millis(250));
                 continue;
             }
@@ -470,17 +403,8 @@ fn stream_reader<R: BufRead>(
             }
         }
 
-        let processed = obfuscator.enabled_line(&line);
-        handle_log_line(
-            &processed,
-            line_number,
-            out,
-            &separator,
-            display_delimiter,
-            summary,
-            fix_override,
-            follow,
-        )?;
+        let processed = ctx.obfuscator.enabled_line(&line);
+        handle_log_line(&processed, line_number, &separator, ctx)?;
     }
 
     Ok(read_any)
@@ -490,46 +414,42 @@ fn stream_reader<R: BufRead>(
 fn handle_log_line(
     line: &str,
     line_number: usize,
-    out: &mut dyn Write,
     separator: &str,
-    display_delimiter: char,
-    summary: &mut Option<OrderSummary>,
-    fix_override: Option<&str>,
-    follow: bool,
+    ctx: &mut PrettifyContext,
 ) -> io::Result<()> {
     let matches = find_fix_message_indices(line);
     let colours = palette();
 
     if !validation_enabled() {
         if matches.is_empty() {
-            if summary.is_none() {
-                writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
+            if ctx.summary.is_none() {
+                writeln!(ctx.out, "{}{}{}", colours.line, line, colours.reset)?;
             }
             return Ok(());
         }
 
         let (messages, coloured_line) =
-            extract_messages_and_format(line, &matches, display_delimiter);
+            extract_messages_and_format(line, &matches, ctx.display_delimiter);
 
-        if summary.is_none() {
-            write!(out, "{coloured_line}")?;
-            write!(out, "{separator}")?;
+        if ctx.summary.is_none() {
+            write!(ctx.out, "{coloured_line}")?;
+            write!(ctx.out, "{separator}")?;
         }
 
         for msg in messages {
-            if let Some(ref mut tracker) = summary.as_mut() {
-                tracker.record_message(&msg, fix_override);
+            if let Some(ref mut tracker) = ctx.summary.as_mut() {
+                tracker.record_message(&msg, ctx.fix_override);
             }
-            if summary.is_none() {
-                process_fix_message(&msg, out, separator, fix_override)?;
+            if ctx.summary.is_none() {
+                process_fix_message(&msg, ctx.out, separator, ctx.fix_override)?;
             }
         }
-        if let Some(ref mut tracker) = summary.as_mut() {
-            if follow {
-                let _printed = tracker.render_completed(out)?;
-                tracker.render_footer(out)?;
+        if let Some(ref mut tracker) = ctx.summary.as_mut() {
+            if ctx.follow {
+                let _printed = tracker.render_completed(ctx.out)?;
+                tracker.render_footer(ctx.out)?;
             } else {
-                tracker.render_footer(out)?;
+                tracker.render_footer(ctx.out)?;
             }
         }
 
@@ -541,23 +461,23 @@ fn handle_log_line(
     }
 
     for (start, end) in &matches {
-        if let Some(ref mut tracker) = summary.as_mut() {
-            tracker.record_message(&line[*start..*end], fix_override);
+        if let Some(ref mut tracker) = ctx.summary.as_mut() {
+            tracker.record_message(&line[*start..*end], ctx.fix_override);
         }
     }
-    if let Some(ref mut tracker) = summary.as_mut() {
-        if follow {
-            let _printed = tracker.render_completed(out)?;
-            tracker.render_footer(out)?;
+    if let Some(ref mut tracker) = ctx.summary.as_mut() {
+        if ctx.follow {
+            let _printed = tracker.render_completed(ctx.out)?;
+            tracker.render_footer(ctx.out)?;
         } else {
-            tracker.render_footer(out)?;
+            tracker.render_footer(ctx.out)?;
         }
     }
 
     let mut invalid = Vec::new();
     for (start, end) in matches {
         let msg = &line[start..end];
-        let dict = load_dictionary_with_override(msg, fix_override);
+        let dict = load_dictionary_with_override(msg, ctx.fix_override);
         let report = validator::validate_fix_message(msg, &dict);
         if report.is_clean() {
             continue;
@@ -570,16 +490,16 @@ fn handle_log_line(
         return Ok(());
     }
 
-    let display_line = apply_display_delimiter(line, display_delimiter);
+    let display_line = apply_display_delimiter(line, ctx.display_delimiter);
     writeln!(
-        out,
+        ctx.out,
         "Line {}: {}{}{}",
         line_number, colours.line, display_line, colours.reset
     )?;
 
     for (_, pretty, _) in invalid {
-        write!(out, "{pretty}")?;
-        writeln!(out)?;
+        write!(ctx.out, "{pretty}")?;
+        writeln!(ctx.out)?;
     }
 
     Ok(())
@@ -723,17 +643,18 @@ mod tests {
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut err = io::sink();
         let mut summary = None;
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-            &mut summary,
-            None,
-            false,
-        )
-        .unwrap();
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
         set_validation(false);
 
         let output = String::from_utf8(out).unwrap();
@@ -782,17 +703,18 @@ mod tests {
         );
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut err = io::sink();
         let mut summary = None;
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-            &mut summary,
-            None,
-            false,
-        )
-        .unwrap();
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
         set_validation(false);
 
         let output = String::from_utf8(out).unwrap();
@@ -811,17 +733,18 @@ mod tests {
         let msg = format!("8=FIX.4.4{SOH}9=005{SOH}10=999{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
+        let mut err = io::sink();
         let mut summary = None;
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-            &mut summary,
-            None,
-            false,
-        )
-        .unwrap();
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
         set_validation(false);
 
         let output = String::from_utf8(out).unwrap();

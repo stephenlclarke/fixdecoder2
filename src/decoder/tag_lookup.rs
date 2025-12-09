@@ -274,14 +274,6 @@ pub fn load_dictionary(msg: &str) -> Arc<FixTagLookup> {
         .expect("FIX44 dictionary available")
 }
 
-/// Load a dictionary by explicit schema key (e.g. FIX44), falling back to FIX44 when missing.
-#[cfg(test)]
-pub fn load_dictionary_for_key(key: &str) -> Arc<FixTagLookup> {
-    get_dictionary(key)
-        .or_else(|| get_dictionary("FIX44"))
-        .expect("FIX44 dictionary available")
-}
-
 /// Load a dictionary, allowing an override schema key to force the selection used for decoding.
 pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> Arc<FixTagLookup> {
     if let Some(key) = override_key {
