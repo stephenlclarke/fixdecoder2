@@ -201,6 +201,39 @@ mod tests {
         assert_eq!(visible_width(&padded), 5);
         assert!(padded.ends_with("   "));
     }
+
+    #[test]
+    fn collect_sorted_values_orders_by_enum() {
+        let mut buf = Vec::new();
+        let values = [
+            Value {
+                enumeration: "B".into(),
+                description: "Second".into(),
+            },
+            Value {
+                enumeration: "A".into(),
+                description: "First".into(),
+            },
+        ];
+        let sorted = collect_sorted_values(&mut buf, values.iter());
+        let enums: Vec<&str> = sorted.iter().map(|v| v.enumeration.as_str()).collect();
+        assert_eq!(enums, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn layout_stats_produces_layout() {
+        let mut stats = LayoutStats::default();
+        stats.record(5, 2);
+        stats.record(10, 4);
+        let layout = stats.finalize().expect("layout expected");
+        assert!(layout.column_width >= 12);
+        assert!(layout.columns >= 1);
+    }
+
+    #[test]
+    fn terminal_width_is_positive() {
+        assert!(terminal_width() > 0);
+    }
 }
 
 fn print_field(

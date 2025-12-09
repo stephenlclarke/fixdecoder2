@@ -1023,6 +1023,31 @@ mod tests {
     }
 
     #[test]
+    fn parse_colour_recognises_yes_no() {
+        assert_eq!(parse_colour(Some(&"yes".to_string())).unwrap(), Some(true));
+        assert_eq!(parse_colour(Some(&"No".to_string())).unwrap(), Some(false));
+        assert!(parse_colour(None).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_colour_rejects_invalid() {
+        let err = parse_colour(Some(&"maybe".to_string())).unwrap_err();
+        assert!(err.to_string().contains("invalid value"));
+    }
+
+    #[test]
+    fn parse_delimiter_accepts_hex() {
+        let delim = parse_delimiter(Some(&"\\x01".to_string())).unwrap();
+        assert_eq!(delim, '\u{0001}');
+    }
+
+    #[test]
+    fn parse_delimiter_rejects_empty() {
+        let err = parse_delimiter(Some(&"".to_string())).unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
     fn invalid_fix_version_errors() {
         let opts = dummy_opts("45");
         let res = ensure_valid_fix_version(&opts, &HashMap::new());
