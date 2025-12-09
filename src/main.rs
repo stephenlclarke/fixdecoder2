@@ -67,6 +67,7 @@ fn sha() -> &'static str {
 
 /// Determine the Git remote that best describes the source tree.  Useful
 /// when users report bugs and need to know where the code originated.
+#[allow(dead_code)]
 fn git_url() -> &'static str {
     option_env!("FIXDECODER_GIT_URL").unwrap_or("https://github.com/stephenlclarke/fixdecoder2.git")
 }
@@ -621,11 +622,7 @@ fn find_message<'a>(
         .or_else(|| schema.messages.values().find(|m| m.msg_type == query))
 }
 
-fn print_version_banner() {
-    println!("{}", version_string());
-    print_git_clone();
-}
-
+#[allow(dead_code)]
 fn print_git_clone() {
     println!("  git clone {}\n", git_url());
 }
