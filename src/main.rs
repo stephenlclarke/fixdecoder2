@@ -1060,4 +1060,54 @@ mod tests {
         let res = ensure_valid_fix_version(&opts, &HashMap::new());
         assert!(res.is_ok());
     }
+
+    #[test]
+    fn add_flag_args_sets_flags() {
+        let cmd = add_flag_args(Command::new("test"), &[("verbose", "desc")]);
+        let matches = cmd
+            .try_get_matches_from(["test", "--verbose"])
+            .expect("match verbose flag");
+        assert!(matches.get_flag("verbose"));
+
+        let matches = add_flag_args(Command::new("test"), &[("verbose", "desc")])
+            .try_get_matches_from(["test"])
+            .expect("match empty");
+        assert!(!matches.get_flag("verbose"));
+    }
+
+    #[test]
+    fn add_entity_arg_defaults_to_true_when_missing_value() {
+        let cmd = add_entity_arg(Command::new("test"), "tag", "TAG", "desc");
+        let matches = cmd
+            .clone()
+            .try_get_matches_from(["test", "--tag"])
+            .expect("missing value defaults");
+        assert_eq!(
+            matches.get_one::<String>("tag").map(String::as_str),
+            Some("true")
+        );
+
+        let matches = cmd
+            .try_get_matches_from(["test", "--tag", "35"])
+            .expect("explicit value");
+        assert_eq!(
+            matches.get_one::<String>("tag").map(String::as_str),
+            Some("35")
+        );
+    }
+
+    #[test]
+    fn build_cli_parses_follow_and_summary_flags() {
+        let matches = build_cli()
+            .try_get_matches_from(["fixdecoder", "--summary", "-f"])
+            .expect("parse follow/summary");
+        assert!(matches.get_flag("summary"));
+        assert!(matches.get_flag("follow"));
+    }
+
+    #[test]
+    fn parse_delimiter_accepts_literal() {
+        let delim = parse_delimiter(Some(&",".to_string())).unwrap();
+        assert_eq!(delim, ',');
+    }
 }
