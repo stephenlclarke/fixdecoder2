@@ -18,12 +18,12 @@ pub struct MessageDef {
 
 #[derive(Debug, Default, Clone)]
 pub struct FixTagLookup {
-    tag_to_name: HashMap<u32, String>,
-    enum_map: HashMap<u32, HashMap<String, String>>,
-    field_types: HashMap<u32, String>,
-    messages: HashMap<String, MessageDef>,
-    repeatable_tags: HashSet<u32>,
-    trailer_order: Vec<u32>,
+    tag_to_name: Arc<HashMap<u32, String>>,
+    enum_map: Arc<HashMap<u32, HashMap<String, String>>>,
+    field_types: Arc<HashMap<u32, String>>,
+    messages: Arc<HashMap<String, MessageDef>>,
+    repeatable_tags: Arc<HashSet<u32>>,
+    trailer_order: Arc<Vec<u32>>,
     fallback: Option<Arc<FixTagLookup>>,
 }
 
@@ -74,12 +74,12 @@ impl FixTagLookup {
         dedupe(&mut trailer_order);
 
         FixTagLookup {
-            tag_to_name,
-            enum_map,
-            field_types,
-            messages,
-            repeatable_tags,
-            trailer_order,
+            tag_to_name: Arc::new(tag_to_name),
+            enum_map: Arc::new(enum_map),
+            field_types: Arc::new(field_types),
+            messages: Arc::new(messages),
+            repeatable_tags: Arc::new(repeatable_tags),
+            trailer_order: Arc::new(trailer_order),
             fallback: None,
         }
     }
@@ -133,11 +133,11 @@ impl FixTagLookup {
 
     pub fn trailer_tags(&self) -> &[u32] {
         if !self.trailer_order.is_empty() {
-            &self.trailer_order
+            self.trailer_order.as_slice()
         } else if let Some(fallback) = &self.fallback {
             fallback.trailer_tags()
         } else {
-            &self.trailer_order
+            self.trailer_order.as_slice()
         }
     }
 }
@@ -146,12 +146,12 @@ impl FixTagLookup {
 impl FixTagLookup {
     pub fn new_for_tests(messages: HashMap<String, MessageDef>) -> Self {
         FixTagLookup {
-            tag_to_name: HashMap::new(),
-            enum_map: HashMap::new(),
-            field_types: HashMap::new(),
-            messages,
-            repeatable_tags: HashSet::new(),
-            trailer_order: vec![10],
+            tag_to_name: Arc::new(HashMap::new()),
+            enum_map: Arc::new(HashMap::new()),
+            field_types: Arc::new(HashMap::new()),
+            messages: Arc::new(messages),
+            repeatable_tags: Arc::new(HashSet::new()),
+            trailer_order: Arc::new(vec![10]),
             fallback: None,
         }
     }
@@ -163,6 +163,13 @@ static LOOKUPS: Lazy<RwLock<HashMap<String, Arc<FixTagLookup>>>> =
 static OVERRIDE_MISS: AtomicBool = AtomicBool::new(false);
 
 const SESSION_KEY: &str = "FIXT11";
+
+/// Remove any cached override+detected combos that reference the given key.
+pub fn clear_override_cache_for(key: &str) {
+    if let Ok(mut guard) = LOOKUPS.write() {
+        drop_combo_entries_for(key, &mut guard);
+    }
+}
 
 fn schema_to_xml_id(key: &str) -> Option<&'static str> {
     match key {
@@ -183,23 +190,6 @@ fn schema_to_xml_id(key: &str) -> Option<&'static str> {
 
 fn needs_session_merge(key: &str) -> bool {
     matches!(key, "FIX50" | "FIX50SP1" | "FIX50SP2")
-}
-
-fn merge_lookup(dst: &mut FixTagLookup, src: &FixTagLookup) {
-    for (tag, name) in &src.tag_to_name {
-        dst.tag_to_name.entry(*tag).or_insert_with(|| name.clone());
-    }
-
-    for (tag, enums) in &src.enum_map {
-        let entry = dst.enum_map.entry(*tag).or_default();
-        for (value, desc) in enums {
-            entry.entry(value.clone()).or_insert_with(|| desc.clone());
-        }
-    }
-
-    for (tag, typ) in &src.field_types {
-        dst.field_types.entry(*tag).or_insert_with(|| typ.clone());
-    }
 }
 
 fn get_dictionary(key: &str) -> Option<Arc<FixTagLookup>> {
@@ -322,6 +312,8 @@ pub fn register_dictionary(key: &str, dict: &FixDictionary) {
     let lookup = build_lookup_from_dict(key, dict);
     let mut guard = LOOKUPS.write().expect("dictionary cache poisoned");
     guard.insert(key.to_string(), Arc::new(lookup));
+
+    drop_combo_entries_for(key, &mut guard);
 }
 
 fn build_lookup_from_dict(key: &str, dict: &FixDictionary) -> FixTagLookup {
@@ -330,10 +322,25 @@ fn build_lookup_from_dict(key: &str, dict: &FixDictionary) -> FixTagLookup {
     if needs_session_merge(key)
         && let Some(session) = get_dictionary(SESSION_KEY)
     {
-        merge_lookup(&mut lookup, &session);
+        lookup.fallback = Some(session);
     }
 
     lookup
+}
+
+fn drop_combo_entries_for(key: &str, guard: &mut HashMap<String, Arc<FixTagLookup>>) {
+    let stale: Vec<String> = guard
+        .keys()
+        .filter(|k| {
+            k.split_once('+')
+                .map(|(override_key, detected)| override_key == key || detected == key)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
+    for combo in stale {
+        guard.remove(&combo);
+    }
 }
 
 fn build_message_defs(

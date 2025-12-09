@@ -3,7 +3,9 @@
 
 use crate::decoder::colours::palette;
 use crate::decoder::fixparser::parse_fix;
-use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary_with_override};
+use crate::decoder::tag_lookup::{
+    FixTagLookup, clear_override_cache_for, load_dictionary_with_override,
+};
 use chrono::{Datelike, Duration, NaiveDate};
 use std::collections::{HashMap, hash_map::Entry};
 use std::io::Write;
@@ -19,6 +21,7 @@ pub struct OrderSummary {
     total_orders: usize,
     terminal_orders: usize,
     footer_width: usize,
+    fix_override_key: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,6 +92,9 @@ impl OrderSummary {
         let fields = parse_fix(msg);
         if fields.is_empty() {
             return;
+        }
+        if let Some(key) = fix_override {
+            self.fix_override_key.get_or_insert_with(|| key.to_string());
         }
 
         let mut map = HashMap::new();
@@ -161,11 +167,15 @@ impl OrderSummary {
             self.render_record(out, record)?;
         }
 
-        writeln!(
+        let res = writeln!(
             out,
-            "{}Order Summary{} ({} open, {} total, to fill: {}/{})",
+            "{}Order Summary{} ({} open, {} total, to fill: {}/{})\n",
             colours.title, colours.reset, open, total, open, total
-        )
+        );
+        if !self.completed.is_empty() {
+            self.clear_override_cache();
+        }
+        res
     }
 
     /// Render only newly completed orders and clear them. Returns true if anything was printed.
@@ -179,6 +189,7 @@ impl OrderSummary {
         for record in &self.completed {
             self.render_record(out, record)?;
         }
+        self.clear_override_cache();
         self.completed.clear();
         out.flush()?;
         Ok(true)
@@ -197,6 +208,12 @@ impl OrderSummary {
         out.flush()?;
         self.footer_width = width;
         Ok(())
+    }
+
+    fn clear_override_cache(&self) {
+        if let Some(key) = &self.fix_override_key {
+            clear_override_cache_for(key);
+        }
     }
 
     fn render_record(&self, out: &mut dyn Write, record: &OrderRecord) -> std::io::Result<()> {

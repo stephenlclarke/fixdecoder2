@@ -22,7 +22,7 @@ use decoder::{
     DisplayStyle, FixDictionary, PrettifyContext, disable_output_colours, display_component,
     display_message, list_all_components, list_all_messages, list_all_tags, prettify_files,
     print_component_columns, print_message_columns, print_tag_details, print_tags_in_columns,
-    register_fix_dictionary, schema::SchemaTree, set_validation, summary::OrderSummary, tag_lookup,
+    register_fix_dictionary, schema::SchemaTree, summary::OrderSummary, tag_lookup,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -30,6 +30,7 @@ use std::io;
 use std::io::Write;
 use std::process;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 
 /// Wrapper for a custom FIX dictionary sourced from `--xml` along with its path.
 struct CustomDictionary {
@@ -89,7 +90,7 @@ fn install_interrupt_handler() -> Result<()> {
     ctrlc::set_handler(|| {
         let _ = io::stdout().write_all(b"\n\n");
         let _ = io::stdout().flush();
-        process::exit(130);
+        decoder::prettifier::interrupt_flag().store(true, Ordering::Relaxed);
     })
     .context("failed to install Ctrl+C handler")
 }
@@ -135,8 +136,6 @@ fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    set_validation(opts.validate);
-
     let custom_dicts = load_custom_dictionaries(&opts.xml_paths)?;
     ensure_valid_fix_version(&opts, &custom_dicts)?;
     let schema = load_schema(&opts, &custom_dicts)?;
@@ -175,6 +174,10 @@ fn run() -> Result<i32> {
         summary: &mut summary,
         fix_override: fix_override.as_deref(),
         follow: opts.follow,
+        validation_enabled: opts.validate,
+        message_counts: std::collections::HashMap::new(),
+        counts_dirty: false,
+        interrupted: decoder::prettifier::interrupt_flag(),
     };
     let code = prettify_files(&files, &mut ctx);
 
@@ -188,11 +191,8 @@ fn run() -> Result<i32> {
         .ok();
     }
 
-    if let Some(ref mut summary) = summary {
-        summary.render(&mut stdout)?;
-    }
-
-    Ok(code)
+    let interrupted = decoder::prettifier::interrupt_flag().load(Ordering::Relaxed);
+    Ok(if interrupted { 130 } else { code })
 }
 
 /// Construct the `clap` command with all supported arguments.  Options are
@@ -447,6 +447,7 @@ fn load_custom_dictionaries(paths: &[String]) -> Result<HashMap<String, CustomDi
         let key = dictionary_key(&dict);
         ensure_session_components(&key, &mut dict);
         register_fix_dictionary(&key, &dict);
+        tag_lookup::clear_override_cache_for(&key);
         if let Some(existing) = dicts.insert(
             key.clone(),
             CustomDictionary {

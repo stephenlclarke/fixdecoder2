@@ -52,7 +52,7 @@ The utility behaves like the `cat` utility in `Linux`, except as it reads the in
 
 <!-- USAGE:START -->
 ```bash
-fixdecoder 0.2.0 (branch:develop, commit:abb0cca) [rust:1.91.1]
+fixdecoder 0.2.0 (branch:develop, commit:d039dae) [rust:1.91.1]
 FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier
 
 Usage: fixdecoder [OPTIONS] [FILE]...

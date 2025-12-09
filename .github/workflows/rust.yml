@@ -179,6 +179,17 @@ jobs:
       SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+      - name: Determine toolchain channel
+        id: toolchain-id
+        run: |
+          toolchain="stable"
+          if [ -f rust-toolchain.toml ]; then
+            parsed=$(grep -m1 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+            toolchain=${parsed:-$toolchain}
+          elif [ -f rust-toolchain ]; then
+            toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
+          fi
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
       - name: Compute lockfile hash
         id: lockfile-hash
         run: echo "hash=$(sha256sum Cargo.lock | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
@@ -186,11 +197,11 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            /github/home/.cargo/bin
-            /github/home/.rustup
-          key: sonar-rust-${{ runner.os }}-${{ steps.lockfile-hash.outputs.hash }}
+            $HOME/.cargo/bin
+            $HOME/.rustup
+          key: sonar-rust-${{ runner.os }}-${{ steps.toolchain-id.outputs.toolchain }}-${{ steps.lockfile-hash.outputs.hash }}
           restore-keys: |
-            sonar-rust-${{ runner.os }}-
+            sonar-rust-${{ runner.os }}-${{ steps.toolchain-id.outputs.toolchain }}-
       - name: Download coverage artifact
         uses: actions/download-artifact@v4
         with:
@@ -201,7 +212,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           if ! command -v cargo >/dev/null 2>&1; then
             apt-get update && apt-get install -y curl ca-certificates build-essential
-            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${{ steps.toolchain-id.outputs.toolchain }}
             echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
           fi
           "$HOME/.cargo/bin/rustup" component add clippy
