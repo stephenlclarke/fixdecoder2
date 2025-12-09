@@ -1436,4 +1436,62 @@ mod tests {
         assert!(output.contains("ORD123"));
         assert!(output.contains("AAPL"));
     }
+
+    #[test]
+    fn resolve_key_prefers_alias_then_ids() {
+        let mut summary = OrderSummary::new('|');
+        summary.aliases.insert("ALIAS".into(), "RESOLVED".into());
+        // alias hit
+        assert_eq!(
+            summary.resolve_key(Some("ALIAS"), Some("OTHER"), None),
+            "RESOLVED"
+        );
+        // order_id fallback
+        assert_eq!(
+            summary.resolve_key(Some("OID"), Some("CLID"), None),
+            "OID".to_string()
+        );
+        // unknown increments counter
+        let unk = summary.resolve_key(None, None, None);
+        assert!(unk.starts_with("UNKNOWN-"));
+    }
+
+    #[test]
+    fn display_instrument_formats_side_and_symbol() {
+        let mut record = OrderRecord::new("KEY".into());
+        record.side = Some("2".into());
+        record.symbol = Some("MSFT".into());
+        assert_eq!(record.display_instrument(), "Sell MSFT");
+    }
+
+    #[test]
+    fn state_path_deduplicates_consecutive_states() {
+        let mut record = OrderRecord::new("KEY".into());
+        record.events.push(OrderEvent {
+            time: None,
+            msg_type: None,
+            msg_type_desc: None,
+            exec_type: Some("0".into()),
+            ord_status: None,
+            exec_ack_status: None,
+            state: "New".into(),
+            cum_qty: None,
+            leaves_qty: None,
+            last_qty: None,
+            last_px: None,
+            avg_px: None,
+            text: None,
+            cl_ord_id: None,
+            orig_cl_ord_id: None,
+        });
+        record.events.push(OrderEvent {
+            state: "New".into(),
+            ..record.events[0].clone()
+        });
+        record.events.push(OrderEvent {
+            state: "Filled".into(),
+            ..record.events[0].clone()
+        });
+        assert_eq!(record.state_path(), vec!["New", "Filled"]);
+    }
 }

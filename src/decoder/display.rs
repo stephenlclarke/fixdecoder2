@@ -187,6 +187,7 @@ fn format_required(required: bool, colours: ColourPalette) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decoder::schema::ValuesWrapper;
 
     #[test]
     fn visible_width_ignores_ansi_sequences() {
@@ -233,6 +234,131 @@ mod tests {
     #[test]
     fn terminal_width_is_positive() {
         assert!(terminal_width() > 0);
+    }
+
+    fn sample_value(enum_code: &str, desc: &str) -> Value {
+        Value {
+            enumeration: enum_code.to_string(),
+            description: desc.to_string(),
+        }
+    }
+
+    fn sample_field_node(required: bool) -> FieldNode {
+        use std::sync::Arc;
+        let field = Field {
+            name: "TestField".into(),
+            number: 999,
+            field_type: "STRING".into(),
+            values: vec![sample_value("A", "Alpha")],
+            values_wrapper: ValuesWrapper::default(),
+        };
+        FieldNode {
+            required,
+            field: Arc::new(field),
+        }
+    }
+
+    #[test]
+    fn print_field_renders_required_indicator() {
+        let node = sample_field_node(true);
+        let mut out = Vec::new();
+        print_field(&mut out, &node, 2, palette()).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("999"));
+        assert!(s.contains("TestField"));
+        assert!(s.contains("STRING"));
+        assert!(
+            s.contains('Y'),
+            "required marker should be present: {s}"
+        );
+    }
+
+    #[test]
+    fn print_enum_outputs_coloured_enum() {
+        let value = sample_value("B", "Beta");
+        let mut out = Vec::new();
+        print_enum(&mut out, &value, 0, palette()).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("B"));
+        assert!(s.contains("Beta"));
+    }
+
+    #[test]
+    fn print_enum_columns_respects_layout_columns() {
+        let values = vec![sample_value("C", "Gamma"), sample_value("A", "Alpha")];
+        let refs: Vec<&Value> = values.iter().collect();
+        let mut out = Vec::new();
+        let layout = ColumnLayout {
+            column_width: 12,
+            columns: 2,
+            max_indent: 0,
+        };
+        print_enum_columns(&mut out, &refs, 0, palette(), Some(layout)).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        // Two entries sorted and rendered in at most two lines.
+        assert!(s.contains("A"));
+        assert!(s.contains("C"));
+        assert!(s.lines().count() <= 2);
+    }
+
+    #[test]
+    fn compute_values_layout_uses_max_entry() {
+        let values = vec![sample_value("LONG", "desc"), sample_value("S", "short")];
+        let refs: Vec<&Value> = values.iter().collect();
+        let layout = compute_values_layout(&refs, 4).expect("layout expected");
+        assert!(layout.column_width >= "LONG: desc".len());
+        assert!(layout.columns >= 1);
+    }
+
+    #[test]
+    fn collect_group_layout_counts_nested_components() {
+        let field = sample_field_node(false);
+        let group = GroupNode {
+            name: "Group".into(),
+            required: false,
+            fields: vec![field.clone()],
+            components: vec![ComponentNode {
+                name: "Comp".into(),
+                fields: vec![field],
+                groups: Vec::new(),
+                components: Vec::new(),
+            }],
+            groups: Vec::new(),
+        };
+        let mut stats = LayoutStats::default();
+        collect_group_layout(&group, 0, &mut stats);
+        assert!(stats.max_entry_len > 0);
+    }
+
+    #[test]
+    fn tag_and_message_cells_include_expected_text() {
+        let colours = palette();
+        let tag = tag_cell(1, "Test", "INT", true, colours);
+        assert!(tag.text.contains("Test"));
+        let msg = MessageNode {
+            name: "Heartbeat".into(),
+            msg_type: "0".into(),
+            msg_cat: "app".into(),
+            fields: Vec::new(),
+            components: Vec::new(),
+            groups: Vec::new(),
+        };
+        let cell = message_cell(&msg, colours);
+        assert!(cell.text.contains("Heartbeat"));
+    }
+
+    #[test]
+    fn visible_len_ignores_escape_sequences() {
+        let text = "\u{1b}[33mhello\u{1b}[0m";
+        assert_eq!(visible_len(text), 5);
+    }
+
+    #[test]
+    fn write_with_padding_adds_spaces() {
+        let mut out = Vec::new();
+        write_with_padding(&mut out, 3, 5, |w| write!(w, "hey")).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.ends_with("  "));
     }
 }
 
