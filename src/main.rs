@@ -18,6 +18,7 @@ use atty::Stream;
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
+use ctrlc;
 use decoder::{
     DisplayStyle, FixDictionary, disable_output_colours, display_component, display_message,
     list_all_components, list_all_messages, list_all_tags, prettify_files, print_component_columns,
@@ -28,6 +29,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::Write;
+use std::process;
 use std::sync::OnceLock;
 
 /// Wrapper for a custom FIX dictionary sourced from `--xml` along with its path.
@@ -84,10 +86,19 @@ fn version_str() -> &'static str {
     VERSION_STR.get_or_init(version_string).as_str()
 }
 
+fn install_interrupt_handler() -> Result<()> {
+    ctrlc::set_handler(|| {
+        let _ = io::stdout().write_all(b"\n\n");
+        let _ = io::stdout().flush();
+        process::exit(130);
+    })
+    .context("failed to install Ctrl+C handler")
+}
+
 /// Conventional `main` that defers to `run` so tests can call the logic
 /// without having to spin up a separate process.
 fn main() {
-    std::process::exit(match run() {
+    process::exit(match run() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{err}");
@@ -100,6 +111,7 @@ fn main() {
 /// and finally drive the prettifier.  Everything user-facing goes through
 /// here, so the structure favours clarity over cleverness.
 fn run() -> Result<i32> {
+    install_interrupt_handler()?;
     println!("{}", version_string());
 
     let cmd = build_cli();
@@ -164,6 +176,7 @@ fn run() -> Result<i32> {
         opts.delimiter,
         &mut summary,
         fix_override.as_deref(),
+        opts.follow,
     );
 
     if tag_lookup::override_warn_triggered() {
@@ -271,6 +284,13 @@ fn build_cli() -> Command {
             .action(ArgAction::SetTrue)
             .help("Track order state across messages and print a summary"),
     )
+    .arg(
+        Arg::new("follow")
+            .long("follow")
+            .short('f')
+            .action(ArgAction::SetTrue)
+            .help("Stream input like tail -f"),
+    )
 }
 
 /// Add a `--name[=VALUE]` argument that can be used with or without a value (defaulting to “true”).
@@ -327,6 +347,8 @@ struct CliOptions {
     colour: Option<bool>,
     show_version: bool,
     summary: bool,
+    #[allow(dead_code)]
+    follow: bool,
     files: Vec<String>,
     delimiter: char,
 }
@@ -371,6 +393,7 @@ impl CliOptions {
             colour: parse_colour(matches.get_one::<String>("colour"))?,
             show_version: matches.get_flag("version"),
             summary: matches.get_flag("summary"),
+            follow: matches.get_flag("follow"),
             files,
             delimiter: parse_delimiter(matches.get_one::<String>("delimiter"))?,
         })
@@ -895,6 +918,7 @@ mod tests {
             colour: None,
             show_version: false,
             summary: false,
+            follow: false,
             files: Vec::new(),
             delimiter: '\u{0001}',
         }

@@ -18,6 +18,7 @@ pub struct OrderSummary {
     completed: Vec<OrderRecord>,
     total_orders: usize,
     terminal_orders: usize,
+    footer_width: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +148,10 @@ impl OrderSummary {
         let open = self.orders.len();
         let total = self.total_orders;
 
+        if self.footer_width > 0 {
+            writeln!(out, "\r{}", " ".repeat(self.footer_width))?;
+        }
+
         for record in &self.completed {
             self.render_record(out, record)?;
         }
@@ -161,6 +166,37 @@ impl OrderSummary {
             "{}Order Summary{} ({} open, {} total, to fill: {}/{})",
             colours.title, colours.reset, open, total, open, total
         )
+    }
+
+    /// Render only newly completed orders and clear them. Returns true if anything was printed.
+    pub fn render_completed(&mut self, out: &mut dyn Write) -> std::io::Result<bool> {
+        if self.completed.is_empty() {
+            return Ok(false);
+        }
+        if self.footer_width > 0 {
+            write!(out, "\r{}{}", " ".repeat(self.footer_width), "\r")?;
+        }
+        for record in &self.completed {
+            self.render_record(out, record)?;
+        }
+        self.completed.clear();
+        out.flush()?;
+        Ok(true)
+    }
+
+    pub fn render_footer(&mut self, out: &mut dyn Write) -> std::io::Result<()> {
+        let line = format!(
+            "Status: open={} filled={} total={}",
+            self.orders.len(),
+            self.terminal_orders,
+            self.total_orders
+        );
+        let width = visible_width(&line).max(self.footer_width);
+        let pad = " ".repeat(width.saturating_sub(visible_width(&line)));
+        write!(out, "\r{}{pad}", line)?;
+        out.flush()?;
+        self.footer_width = width;
+        Ok(())
     }
 
     fn render_record(&self, out: &mut dyn Write, record: &OrderRecord) -> std::io::Result<()> {
@@ -415,22 +451,33 @@ impl OrderRecord {
     }
 
     fn is_terminal(&self) -> bool {
-        self.state_path()
-            .last()
-            .map(|s| {
-                matches!(
-                    s.as_str(),
-                    "Filled"
-                        | "Canceled"
-                        | "Rejected"
-                        | "Done for Day"
-                        | "Expired"
-                        | "Stopped"
-                        | "Suspended"
-                        | "Calculated"
-                )
-            })
-            .unwrap_or(false)
+        if let Some(state) = self.state_path().last() {
+            if matches!(
+                state.as_str(),
+                "Filled"
+                    | "Canceled"
+                    | "Rejected"
+                    | "Done for Day"
+                    | "Expired"
+                    | "Stopped"
+                    | "Suspended"
+                    | "Calculated"
+            ) {
+                return true;
+            }
+        }
+
+        if let Some(exec_ack) = self
+            .events
+            .iter()
+            .rev()
+            .find_map(|e| e.exec_ack_status.as_deref())
+            && matches!(exec_ack, "1" | "3" | "4")
+        {
+            return true;
+        }
+
+        false
     }
 
     fn merge_ids(
@@ -1152,7 +1199,11 @@ mod tests {
             None,
         );
 
-        let record = summary.orders.get("OID1").expect("bn order captured");
+        let record = summary
+            .orders
+            .get("OID1")
+            .or_else(|| summary.completed.iter().find(|r| r.key == "OID1"))
+            .expect("bn order captured");
         assert_eq!(record.state_path(), vec!["Accepted"]);
         assert_eq!(record.spot_rate.as_deref(), Some("1.2345"));
         assert!(record.bn_seen, "bn flag should be set");

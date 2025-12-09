@@ -50,9 +50,9 @@ The utility behaves like the `cat` utility in `Linux`, except as it reads the in
 
 ## Running the utility
 
+<!-- USAGE:START -->
 ```bash
-❯ ./target/release/fixdecoder --help
-fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
+fixdecoder 0.2.0 (branch:develop, commit:4ea6c45) [rust:1.91.1]
 FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier
 
 Usage: fixdecoder [OPTIONS] [FILE]...
@@ -77,38 +77,66 @@ Options:
       --delimiter <CHAR>    Display delimiter between FIX fields (default: SOH)
       --version             Print version information and exit
       --summary             Track order state across messages and print a summary
+  -f, --follow              Stream input like tail -f
   -h, --help                Print help
 
 Command line option examples:
-  Query FIX dictionary contents by FIX Message Name or MsgType:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
 
-    $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
-    $ fixdecoder --message=D --verbose --column --header --trailer
-  
-  Query FIX dictionary contents by FIX Tag number:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
+  FIX dictionary lookup
 
-    $ fixdecoder --tag=44 --verbose --column
+    Query FIX dictionary contents by FIX Message Name or MsgType:
+
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
+
+      $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
+      $ fixdecoder --message=D --verbose --column --header --trailer
     
-  Query FIX dictionary contents by FIX Component Name:
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
+    Query FIX dictionary contents by FIX Tag number:
 
-    $ fixdecoder --component=Instrument --verbose --column
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
+
+      $ fixdecoder --tag=44 --verbose --column
+      
+    Query FIX dictionary contents by FIX Component Name:
+
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
+
+      $ fixdecoder --component=Instrument --verbose --column
 
   Show summary information about available FIX dictionaries:
+
     fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
 
     $ fixdecoder --info
 
-  Prettify FIX log files with optional validation and obfuscation if output is piped then colour is disabled by default but can be forced on with --colour=yes:
-    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--summary] [--fix=VER] [--delimiter=CHAR] [file1.log file2.log ...]
+  Prettify FIX log files with optional validation and obfuscation; if output is piped then colour is disabled by
+  default but can be forced on with --colour=yes:
 
-    $ fixdecoder --validate --secret --summary logs/fix.log
-    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' --summary | less
-    $ fixdecoder --fix=44 trades.log   (forces FIX44 decoding instead of auto-detect)
-    $ tail -f logs/fix.log | fixdecoder --validate
+    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--summary] [--follow] [--fix=VER] [--delimiter=CHAR] [file1.log file2.log ...]
+
+    Validate and Obfuscate a FIX logfile.
+
+    $ fixdecoder --validate --secret logs/fix.log
+
+    Decode all the NewOrderSingle messages in a FIX logfile and output the fix messages using a custom delimiter
+    also force colour mode because this example pipes the output into less. Normally colour mode is turned off
+    when piping the output due to the output containing ANSI control chars which may mess up processing further
+    down the pipe chain.
+
+    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' | less
+
+    Force the decoding of a FIX log to use the FIX 4.4 dictionary. Only uses the version of the FIX dictionary
+    specified in the FIX message header if the tag being processed is not defined in the override dictionary.
+    for example FIX 4.4 does not have the FIX 4.2 tag 20 (ExecTransType)
+
+    $ fixdecoder --fix=44 trades.log
+
+    Process a FIX log file and display an order summary for each order that is processed.
+
+    $ fixdecoder --summary --follow logs/fix.log
+
 ```
+<!-- USAGE:END -->
 
 ```bash
 ❯ target/debug/fixdecoder --info

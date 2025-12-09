@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""
-Compute a Cargo.lock SHA-256 hash and write it to $GITHUB_OUTPUT as `hash=...`.
+"""Compute a Cargo.lock SHA-256 hash and emit it to stdout/GITHUB_OUTPUT.
 
 Usage: python compute_lockfile_hash.py [path_to_lockfile]
 Defaults to "Cargo.lock" in the current working directory.
@@ -15,6 +14,7 @@ from pathlib import Path
 
 
 def main() -> int:
+    """Hash the Cargo.lock (or provided path) and emit it to stdout/GITHUB_OUTPUT."""
     lockfile = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("Cargo.lock")
     if not lockfile.is_file():
         print(f"Lockfile not found: {lockfile}", file=sys.stderr)

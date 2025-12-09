@@ -197,6 +197,7 @@ pub fn prettify_files(
     display_delimiter: char,
     summary: &mut Option<OrderSummary>,
     fix_override: Option<&str>,
+    follow: bool,
 ) -> i32 {
     let mut had_error = false;
 
@@ -208,6 +209,7 @@ pub fn prettify_files(
             display_delimiter,
             summary,
             fix_override,
+            follow,
         );
     }
 
@@ -220,6 +222,7 @@ pub fn prettify_files(
                 display_delimiter,
                 summary,
                 fix_override,
+                follow,
             ) != 0
             {
                 had_error = true;
@@ -235,6 +238,7 @@ pub fn prettify_files(
             display_delimiter,
             summary,
             fix_override,
+            follow,
         )
         .is_err()
         {
@@ -330,30 +334,39 @@ fn handle_stdin(
     display_delimiter: char,
     summary: &mut Option<OrderSummary>,
     fix_override: Option<&str>,
+    follow: bool,
 ) -> i32 {
     obfuscator.reset();
     if !validation_enabled() {
         let _ = writeln!(out, "Processing: (stdin)\n");
     }
-    if stream_reader(
-        BufReader::new(io::stdin().lock()),
-        out,
-        obfuscator,
-        display_delimiter,
-        summary,
-        fix_override,
-    )
-    .is_err()
-    {
-        let colours = palette();
-        let _ = writeln!(
-            err_out,
-            "{}Error reading input{}",
-            colours.error, colours.reset
+    loop {
+        let res = stream_reader(
+            BufReader::new(io::stdin().lock()),
+            out,
+            obfuscator,
+            display_delimiter,
+            summary,
+            fix_override,
+            follow,
         );
-        return 1;
+        match res {
+            Ok(_) if follow => {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+            Ok(_) => return 0,
+            Err(_) => {
+                let colours = palette();
+                let _ = writeln!(
+                    err_out,
+                    "{}Error reading input{}",
+                    colours.error, colours.reset
+                );
+                return 1;
+            }
+        }
     }
-    0
 }
 
 /// Handle decoding from a single file path, printing progress when validation is disabled.
@@ -365,6 +378,7 @@ fn handle_file(
     display_delimiter: char,
     summary: &mut Option<OrderSummary>,
     fix_override: Option<&str>,
+    follow: bool,
 ) -> io::Result<()> {
     obfuscator.reset();
     let colours = palette();
@@ -377,16 +391,23 @@ fn handle_file(
     }
 
     match File::open(path) {
-        Ok(file) => {
-            stream_reader(
-                BufReader::new(file),
+        Ok(file) => loop {
+            let read_any = stream_reader(
+                BufReader::new(file.try_clone()?),
                 out,
                 obfuscator,
                 display_delimiter,
                 summary,
                 fix_override,
+                follow,
             )?;
-        }
+            if !follow {
+                break;
+            }
+            if !read_any {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        },
         Err(err) => {
             let _ = writeln!(
                 err_out,
@@ -407,7 +428,8 @@ fn stream_reader<R: BufRead>(
     display_delimiter: char,
     summary: &mut Option<OrderSummary>,
     fix_override: Option<&str>,
-) -> io::Result<()> {
+    follow: bool,
+) -> io::Result<bool> {
     let mut line = String::new();
     let colours = palette();
     let separator = format!(
@@ -418,12 +440,27 @@ fn stream_reader<R: BufRead>(
     );
 
     let mut line_number = 0usize;
+    let mut read_any = false;
     loop {
         line.clear();
-        let bytes = reader.read_line(&mut line)?;
+        let bytes = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                if !follow {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+        };
         if bytes == 0 {
+            if follow {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
             break;
         }
+        read_any = true;
         line_number += 1;
 
         if line.ends_with('\n') {
@@ -442,10 +479,11 @@ fn stream_reader<R: BufRead>(
             display_delimiter,
             summary,
             fix_override,
+            follow,
         )?;
     }
 
-    Ok(())
+    Ok(read_any)
 }
 
 /// Process a single log line, extracting FIX messages and rendering prettified output.
@@ -457,6 +495,7 @@ fn handle_log_line(
     display_delimiter: char,
     summary: &mut Option<OrderSummary>,
     fix_override: Option<&str>,
+    follow: bool,
 ) -> io::Result<()> {
     let matches = find_fix_message_indices(line);
     let colours = palette();
@@ -472,6 +511,11 @@ fn handle_log_line(
         let (messages, coloured_line) =
             extract_messages_and_format(line, &matches, display_delimiter);
 
+        if summary.is_none() {
+            write!(out, "{coloured_line}")?;
+            write!(out, "{separator}")?;
+        }
+
         for msg in messages {
             if let Some(ref mut tracker) = summary.as_mut() {
                 tracker.record_message(&msg, fix_override);
@@ -480,11 +524,15 @@ fn handle_log_line(
                 process_fix_message(&msg, out, separator, fix_override)?;
             }
         }
-
-        if summary.is_none() {
-            write!(out, "{coloured_line}")?;
-            write!(out, "{separator}")?;
+        if let Some(ref mut tracker) = summary.as_mut() {
+            if follow {
+                let _printed = tracker.render_completed(out)?;
+                tracker.render_footer(out)?;
+            } else {
+                tracker.render_footer(out)?;
+            }
         }
+
         return Ok(());
     }
 
@@ -495,6 +543,14 @@ fn handle_log_line(
     for (start, end) in &matches {
         if let Some(ref mut tracker) = summary.as_mut() {
             tracker.record_message(&line[*start..*end], fix_override);
+        }
+    }
+    if let Some(ref mut tracker) = summary.as_mut() {
+        if follow {
+            let _printed = tracker.render_completed(out)?;
+            tracker.render_footer(out)?;
+        } else {
+            tracker.render_footer(out)?;
         }
     }
 
@@ -675,6 +731,7 @@ mod tests {
             '|',
             &mut summary,
             None,
+            false,
         )
         .unwrap();
         set_validation(false);
@@ -733,6 +790,7 @@ mod tests {
             '|',
             &mut summary,
             None,
+            false,
         )
         .unwrap();
         set_validation(false);
@@ -761,6 +819,7 @@ mod tests {
             '|',
             &mut summary,
             None,
+            false,
         )
         .unwrap();
         set_validation(false);

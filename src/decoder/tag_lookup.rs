@@ -16,7 +16,7 @@ pub struct MessageDef {
     pub required: Vec<u32>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct FixTagLookup {
     tag_to_name: HashMap<u32, String>,
     enum_map: HashMap<u32, HashMap<String, String>>,
@@ -24,6 +24,7 @@ pub struct FixTagLookup {
     messages: HashMap<String, MessageDef>,
     repeatable_tags: HashSet<u32>,
     trailer_order: Vec<u32>,
+    fallback: Option<Arc<FixTagLookup>>,
 }
 
 impl FixTagLookup {
@@ -79,40 +80,65 @@ impl FixTagLookup {
             messages,
             repeatable_tags,
             trailer_order,
+            fallback: None,
         }
     }
 
     pub fn field_name(&self, tag: u32) -> String {
-        self.tag_to_name
-            .get(&tag)
-            .cloned()
-            .unwrap_or_else(|| tag.to_string())
+        if let Some(name) = self.tag_to_name.get(&tag) {
+            return name.clone();
+        }
+        if let Some(fallback) = &self.fallback {
+            return fallback.field_name(tag);
+        }
+        tag.to_string()
     }
 
     pub fn enum_description(&self, tag: u32, value: &str) -> Option<&str> {
-        self.enum_map
-            .get(&tag)
-            .and_then(|enums| enums.get(value).map(|s| s.as_str()))
+        if let Some(enums) = self.enum_map.get(&tag) {
+            return enums.get(value).map(|s| s.as_str());
+        }
+        self.fallback
+            .as_ref()
+            .and_then(|fallback| fallback.enum_description(tag, value))
     }
 
     pub fn enums_for(&self, tag: u32) -> Option<&HashMap<String, String>> {
-        self.enum_map.get(&tag)
+        self.enum_map
+            .get(&tag)
+            .or_else(|| self.fallback.as_ref().and_then(|f| f.enums_for(tag)))
     }
 
     pub fn field_type(&self, tag: u32) -> Option<&str> {
-        self.field_types.get(&tag).map(|s| s.as_str())
+        self.field_types
+            .get(&tag)
+            .map(|s| s.as_str())
+            .or_else(|| self.fallback.as_ref().and_then(|f| f.field_type(tag)))
     }
 
     pub fn message_def(&self, msg_type: &str) -> Option<&MessageDef> {
-        self.messages.get(msg_type)
+        self.messages
+            .get(msg_type)
+            .or_else(|| self.fallback.as_ref().and_then(|f| f.message_def(msg_type)))
     }
 
     pub fn is_repeatable(&self, tag: u32) -> bool {
         self.repeatable_tags.contains(&tag)
+            || self
+                .fallback
+                .as_ref()
+                .map(|f| f.is_repeatable(tag))
+                .unwrap_or(false)
     }
 
     pub fn trailer_tags(&self) -> &[u32] {
-        &self.trailer_order
+        if !self.trailer_order.is_empty() {
+            &self.trailer_order
+        } else if let Some(fallback) = &self.fallback {
+            fallback.trailer_tags()
+        } else {
+            &self.trailer_order
+        }
     }
 }
 
@@ -126,6 +152,7 @@ impl FixTagLookup {
             messages,
             repeatable_tags: HashSet::new(),
             trailer_order: vec![10],
+            fallback: None,
         }
     }
 }
@@ -258,8 +285,24 @@ pub fn load_dictionary_for_key(key: &str) -> Arc<FixTagLookup> {
 /// Load a dictionary, allowing an override schema key to force the selection used for decoding.
 pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> Arc<FixTagLookup> {
     if let Some(key) = override_key {
+        let detected_key = detect_schema_key(msg);
+        let combo_key = format!("{key}+{detected_key}");
+        if let Some(existing) = LOOKUPS.read().ok().and_then(|l| l.get(&combo_key).cloned()) {
+            return existing;
+        }
+
         if let Some(dict) = get_dictionary(key) {
-            return dict;
+            let fallback = load_dictionary(msg);
+            if Arc::ptr_eq(&dict, &fallback) {
+                return dict;
+            }
+            let mut merged = (*dict).clone();
+            merged.fallback = Some(fallback);
+            let merged = Arc::new(merged);
+            if let Ok(mut guard) = LOOKUPS.write() {
+                guard.insert(combo_key, merged.clone());
+            }
+            return merged;
         }
         eprintln!(
             "warning: FIX override '{}' not found; falling back to auto-detected dictionary",
@@ -528,30 +571,59 @@ fn collect_group_repeatables(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use once_cell::sync::Lazy;
+    use std::sync::Mutex;
+
+    static LOOKUP_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
     #[test]
     fn detects_schema_from_default_appl_ver_id() {
+        let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
         let msg = "8=FIXT.1.1\u{0001}35=D\u{0001}1137=8\u{0001}10=000\u{0001}";
         assert_eq!(detect_schema_key(msg), "FIX50SP1");
     }
 
     #[test]
     fn load_dictionary_respects_override_key() {
-        let msg = "8=FIX.4.2\u{0001}35=D\u{0001}10=000\u{0001}";
-        let direct = load_dictionary_for_key("FIX50");
+        let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
+        reset_override_warn();
+        let msg = "8=FIX.4.2\u{0001}35=D\u{0001}1128=9\u{0001}10=000\u{0001}";
         let overridden = load_dictionary_with_override(msg, Some("FIX50"));
+        assert_eq!(
+            overridden.field_name(1128),
+            "ApplVerID",
+            "override should still provide definitions from the selected dictionary"
+        );
         assert!(
-            Arc::ptr_eq(&direct, &overridden),
-            "override should select the explicit dictionary key"
+            !override_warn_triggered(),
+            "a valid override should not trigger the warning flag"
         );
     }
 
     #[test]
     fn warns_and_falls_back_on_unknown_override() {
+        let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
         reset_override_warn();
         let msg = "8=FIX.4.4\u{0001}35=0\u{0001}10=000\u{0001}";
         let dict = load_dictionary_with_override(msg, Some("FIX00BAD"));
         assert!(override_warn_triggered(), "missing override should warn");
         assert_eq!(dict.field_name(35), "MsgType");
+    }
+
+    #[test]
+    fn override_uses_fallback_dictionary_for_missing_tags() {
+        let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
+        reset_override_warn();
+        let msg = "8=FIXT.1.1\u{0001}35=0\u{0001}1128=9\u{0001}10=000\u{0001}";
+        let dict = load_dictionary_with_override(msg, Some("FIX44"));
+        assert_eq!(
+            dict.field_name(1128),
+            "ApplVerID",
+            "override should fall back to detected FIX version when a tag is absent"
+        );
+        assert!(
+            !override_warn_triggered(),
+            "successful fallback should not trigger override warning flag"
+        );
     }
 }

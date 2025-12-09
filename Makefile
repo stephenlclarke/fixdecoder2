@@ -17,6 +17,11 @@ build: prepare
 
 build-release: prepare
 	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build --release'
+	@python3 ci/update_readme.py
+
+.PHONY: update-readme
+update-readme:
+	@python3 ci/update_readme.py
 
 scan: prepare
 	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all --check && cargo clippy --all-targets -- -D warnings'
