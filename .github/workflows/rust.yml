@@ -289,7 +289,8 @@ jobs:
           sonar-scanner \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
-            -Dsonar.rust.clippy.reportPaths=target/clippy.json
+            -Dsonar.rust.clippy.reportPaths=target/clippy.json \
+            -Dsonar.rust.clippy.execute=false
 
   release:
     name: Publish Release
