@@ -144,15 +144,14 @@ fn validate_field_enums_and_types(
                 presence.fallback_role,
                 Some(crate::decoder::tag_lookup::FallbackKind::DetectedOverride)
             )
+            && let Some(fbk) = presence.fallback_key
         {
-            if let Some(fbk) = presence.fallback_key {
-                let err = format!(
-                    "Tag {} is defined in override FIX {} but unknown in detected FIX {}",
-                    field.tag, presence.primary_key, fbk
-                );
-                errors.push(err.clone());
-                tag_errors.entry(field.tag).or_default().push(err);
-            }
+            let err = format!(
+                "Tag {} is defined in override FIX {} but unknown in detected FIX {}",
+                field.tag, presence.primary_key, fbk
+            );
+            errors.push(err.clone());
+            tag_errors.entry(field.tag).or_default().push(err);
         }
 
         if let Some(enums) = dict.enums_for(field.tag)
