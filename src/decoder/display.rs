@@ -267,10 +267,7 @@ mod tests {
         assert!(s.contains("999"));
         assert!(s.contains("TestField"));
         assert!(s.contains("STRING"));
-        assert!(
-            s.contains('Y'),
-            "required marker should be present: {s}"
-        );
+        assert!(s.contains('Y'), "required marker should be present: {s}");
     }
 
     #[test]
@@ -285,7 +282,7 @@ mod tests {
 
     #[test]
     fn print_enum_columns_respects_layout_columns() {
-        let values = vec![sample_value("C", "Gamma"), sample_value("A", "Alpha")];
+        let values = [sample_value("C", "Gamma"), sample_value("A", "Alpha")];
         let refs: Vec<&Value> = values.iter().collect();
         let mut out = Vec::new();
         let layout = ColumnLayout {
@@ -303,7 +300,7 @@ mod tests {
 
     #[test]
     fn compute_values_layout_uses_max_entry() {
-        let values = vec![sample_value("LONG", "desc"), sample_value("S", "short")];
+        let values = [sample_value("LONG", "desc"), sample_value("S", "short")];
         let refs: Vec<&Value> = values.iter().collect();
         let layout = compute_values_layout(&refs, 4).expect("layout expected");
         assert!(layout.column_width >= "LONG: desc".len());
