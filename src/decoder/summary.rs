@@ -328,7 +328,7 @@ impl OrderSummary {
         render_table_row(out, &headers, &values)?;
 
         writeln!(out)?;
-        writeln!(out, "    {}timeline:{}", colours.tag, colours.reset)?;
+        writeln!(out, "    {}Timeline:{}", colours.tag, colours.reset)?;
         let min_msg_width = 42usize;
         let rendered_msgs: Vec<String> = record
             .events
