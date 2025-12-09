@@ -46,17 +46,14 @@ I have written utilities like this in past in Java, Python, C, C++, [go](https:/
 
 # How to use it
 
-The utility behaves like the `cat` utility in `Linux`, except as it reads the input (either piped in from `stdin` or from a filename specified on the commandline) it scans each line for `FIX protocol` messages and prints them out highlighted in bold white while the rest of the line will be in a mid grey colour. After the line is output it will be followed by a detailed breakdown of all the `FIX Protocol` tags that were found in the message. The detailed output will use the appropriate `FIX` dictionary for the version of `FIX` specified in `BeginString (tag 8)` tag.
-
-I plan to produce an update shortly that will also look at `DefaultApplVerID (tag 1137)` when `8=FIXT.1.1` is detected in the message.
+The utility behaves like the `cat` utility in `Linux`, except as it reads the input (either piped in from `stdin` or from a filename specified on the commandline) it scans each line for `FIX protocol` messages and prints them out highlighted in bold white while the rest of the line will be in a mid grey colour. After the line is output it will be followed by a detailed breakdown of all the `FIX Protocol` tags that were found in the message. The detailed output will use the appropriate `FIX` dictionary for the version of `FIX` specified in `BeginString (tag 8)` tag. It will also look at `DefaultApplVerID (tag 1137)` when `8=FIXT.1.1` is detected in the message.
 
 ## Running the utility
 
+<!-- USAGE:START -->
 ```bash
-❯ target/debug/fixdecoder --help
-fixdecoder v0.1.0 (branch:main, commit:f54194a)
-
-FIX protocol decoder tools
+fixdecoder 0.2.0 (branch:develop, commit:d7de4f4) [rust:1.91.1]
+FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier
 
 Usage: fixdecoder [OPTIONS] [FILE]...
 
@@ -79,22 +76,71 @@ Options:
       --colour [<yes|no>]   Force coloured output
       --delimiter <CHAR>    Display delimiter between FIX fields (default: SOH)
       --version             Print version information and exit
+      --summary             Track order state across messages and print a summary
+  -f, --follow              Stream input like tail -f
   -h, --help                Print help
 
 Command line option examples:
 
-  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer] [--delimiter=CHAR]]
-  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column] [--delimiter=CHAR]]
-  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column] [--delimiter=CHAR]]
-  fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
-  fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--delimiter=CHAR] [file1.log file2.log ...]
-  fixdecoder [--version]
+  FIX dictionary lookup
+
+    Query FIX dictionary contents by FIX Message Name or MsgType:
+
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
+
+      $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
+      $ fixdecoder --message=D --verbose --column --header --trailer
+    
+    Query FIX dictionary contents by FIX Tag number:
+
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
+
+      $ fixdecoder --tag=44 --verbose --column
+      
+    Query FIX dictionary contents by FIX Component Name:
+
+      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
+
+      $ fixdecoder --component=Instrument --verbose --column
+
+  Show summary information about available FIX dictionaries:
+
+    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
+
+    $ fixdecoder --info
+
+  Prettify FIX log files with optional validation and obfuscation; if output is piped then colour is disabled by
+  default but can be forced on with --colour=yes:
+
+    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--summary] [--follow] [--fix=VER] [--delimiter=CHAR] [file1.log file2.log ...]
+
+    Validate and Obfuscate a FIX logfile.
+
+    $ fixdecoder --validate --secret logs/fix.log
+
+    Decode all the NewOrderSingle messages in a FIX logfile and output the fix messages using a custom delimiter
+    also force colour mode because this example pipes the output into less. Normally colour mode is turned off
+    when piping the output due to the output containing ANSI control chars which may mess up processing further
+    down the pipe chain.
+
+    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' | less
+
+    Force the decoding of a FIX log to use the FIX 4.4 dictionary. Only uses the version of the FIX dictionary
+    specified in the FIX message header if the tag being processed is not defined in the override dictionary.
+    for example FIX 4.4 does not have the FIX 4.2 tag 20 (ExecTransType)
+
+    $ fixdecoder --fix=44 trades.log
+
+    Process a FIX log file and display an order summary for each order that is processed.
+
+    $ fixdecoder --summary --follow logs/fix.log
+
 ```
+<!-- USAGE:END -->
 
 ```bash
 ❯ target/debug/fixdecoder --info
-fixdecoder v0.1.0 (branch:main, commit:f54194a)
-
+fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
 Available FIX Dictionaries: FIX27,FIX30,FIX40,FIX41,FIX42,FIX43,FIX44,FIX50,FIX50SP1,FIX50SP2,FIXT11
 
 Loaded dictionaries:
@@ -112,19 +158,12 @@ Loaded dictionaries:
   FIXT11                0       71           4           8 built-in
 ```
 
-## How to get it
-
-ℹ️ However you download it you will have to make the binary executable on your
-computer. **Windows** users will need to rename the download and add a `.exe`
-extension to the binary before you can execute it. **Linux** and **MacOS**
-users will need to do a `chmod +x` on the file first.
-
-### Download it
+## Download it
 
 Check out the Repo's [Releases Page](https://github.com/stephenlclarke/fixdecoder2/releases)
 to see what versions are available for the computer you want to run it on.
 
-### Build it
+## Build it
 
 Build it from source. This now requires `bash` version 5+ and a recent `Rust` toolchain (the project is tested with Rust 1.78+).
 
@@ -155,21 +194,137 @@ Resolving deltas: 100% (201/201), done.
 ❯ cd fixdecoder
 ```
 
-Then build it.
+Then build it. Debug version with clippy and code coverage
 
 ```bash
-❯ cargo build --release
-   Compiling fixdecoder v2.1.0 (/Users/you/fixdecoder)
-    Finished `release` profile [optimized] target(s) in 7.37s
+❯ make build scan coverage
+
+>> Ensuring Rust toolchain and coverage tools
+
+>> Installing llvm-tools-preview component
+info: component 'llvm-tools' for target 'aarch64-apple-darwin' is up to date
+
+>> Ensuring FIX XML specs are present
+   Compiling fixdecoder v0.2.0 (/Users/sclarke/github/fixdecoder2)
+warning: fixdecoder@0.2.0: Building fixdecoder 0.2.0 (branch:develop, commit:d7de4f4) [rust:1.91.1]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.92s
+   Compiling fixdecoder v0.2.0 (/Users/sclarke/github/fixdecoder2)
+warning: fixdecoder@0.2.0: Building fixdecoder 0.2.0 (branch:develop, commit:d7de4f4) [rust:1.91.1]
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.71s
+    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
+      Loaded 884 security advisories (from /Users/sclarke/.cargo/advisory-db)
+    Updating crates.io index
+    Scanning Cargo.lock for vulnerabilities (110 crate dependencies)
+Crate:     atty
+Version:   0.2.14
+Warning:   unmaintained
+Title:     `atty` is unmaintained
+Date:      2024-09-25
+ID:        RUSTSEC-2024-0375
+URL:       https://rustsec.org/advisories/RUSTSEC-2024-0375
+Dependency tree:
+atty 0.2.14
+└── fixdecoder 0.2.0
+
+Crate:     atty
+Version:   0.2.14
+Warning:   unsound
+Title:     Potential unaligned read
+Date:      2021-07-04
+ID:        RUSTSEC-2021-0145
+URL:       https://rustsec.org/advisories/RUSTSEC-2021-0145
+
+warning: 2 allowed warnings found
+info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
+   Compiling fixdecoder v0.2.0 (/Users/sclarke/github/fixdecoder2)
+warning: fixdecoder@0.2.0: Building fixdecoder 0.2.0 (branch:develop, commit:d7de4f4) [rust:1.91.1]
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.98s
+     Running unittests src/main.rs (target/llvm-cov-target/debug/deps/fixdecoder-f3e1ddf320589917)
+
+running 27 tests
+test decoder::schema::tests::parse_simple_vec ... ok
+test decoder::schema::tests::parse_message_fields ... ok
+test decoder::schema::tests::parse_message_with_components ... ok
+test decoder::tag_lookup::tests::detects_schema_from_default_appl_ver_id ... ok
+test decoder::summary::tests::terminal_status_from_non_exec_report_updates_header ... ok
+test decoder::summary::tests::links_orders_using_order_id_and_cl_ord_id ... ok
+test decoder::summary::tests::render_outputs_state_headline ... ok
+test decoder::validator::tests::allows_repeating_group_tags ... ok
+test decoder::validator::tests::detects_body_length_mismatch ... ok
+test decoder::validator::tests::detects_checksum_mismatch ... ok
+test decoder::validator::tests::missing_msg_type_still_reports_length_and_tag ... ok
+test fix::obfuscator::tests::reset_starts_aliases_over ... ok
+test tests::invalid_fix_version_errors ... ok
+test tests::valid_fix_version_passes ... ok
+test tests::version_str_is_cached ... ok
+test tests::version_string_matches_components ... ok
+test decoder::prettifier::tests::validation_inserts_missing_tags ... ok
+test decoder::prettifier::tests::validation_skips_valid_messages ... ok
+test decoder::prettifier::tests::prettify_orders_without_msg_type_header_first ... ok
+test decoder::prettifier::tests::validation_only_outputs_invalid_messages ... ok
+test decoder::prettifier::tests::header_and_trailer_are_repositioned_when_out_of_place ... ok
+test decoder::prettifier::tests::prettify_includes_missing_tag_annotations_once ... ok
+test decoder::summary::tests::bn_message_sets_state_and_spot_price ... ok
+test decoder::summary::tests::collects_states_for_single_order ... ok
+test decoder::tag_lookup::tests::load_dictionary_respects_override_key ... ok
+test decoder::tag_lookup::tests::override_uses_fallback_dictionary_for_missing_tags ... ok
+test decoder::tag_lookup::tests::warns_and_falls_back_on_unknown_override ... ok
+
+test result: ok. 27 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.01s
+
+     Running unittests src/bin/generate_sensitive_tags.rs (target/llvm-cov-target/debug/deps/generate_sensitive_tags-1dc73cddc48f727b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli.rs (target/llvm-cov-target/debug/deps/cli-44905c680ca51135)
+
+running 5 tests
+test decodes_single_message_from_stdin ... ok
+test validation_reports_missing_fields ... ok
+test summary_mode_outputs_order_summary ... ok
+test decodes_message_from_file_path ... ok
+test override_is_honoured_with_fallback ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.78s
+
+
+    Finished report saved to target/coverage/coverage.xml
+```
+
+Build the release version
+
+```bash
+❯ make build-release
+
+>> Ensuring Rust toolchain and coverage tools
+
+>> Installing llvm-tools-preview component
+info: component 'llvm-tools' for target 'aarch64-apple-darwin' is up to date
+
+>> Ensuring FIX XML specs are present
+   Compiling fixdecoder v0.2.0 (/Users/sclarke/github/fixdecoder2)
+warning: fixdecoder@0.2.0: Building fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
+    Finished `release` profile [optimized] target(s) in 2.21s
 ```
 
 Run it (from the optimized build) and check the version details:
 
 ```bash
 ❯ ./target/release/fixdecoder --version
-fixdecoder v2.1.0 (branch:develop, commit:c2a60e8)
-  git clone git@github.com:stephenlclarke/fixdecoder.git
+fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
+  git clone git@github.com:stephenlclarke/fixdecoder2.git
 ```
+
+# Technical Notes on the use of the `--summary` flag
+
+- As messages stream by, the decoder builds one “record” per order (keyed by OrderID/ClOrdID/OrigClOrdID).
+- Each message updates that record: standard fields (Side, Symbol, Qty, Price, TIF, OrdType, TradeDate, SettlDate) are taken from the latest message; BN messages also set ExecAckStatus, Spot Price (LastPx), and ExecAmt (38).
+- The header row shows the order key, the flow of states observed (OrdStatus/ExecType/ExecAckStatus), and a table of the latest known values: Side/Symbol/Qty/Price/TradeDate/Tenor/TIF/OrdType/ValueDate (tag 64/193). Prices include currency when present.
+- The timeline lists every message for the order with columns: time, msg (enum text plus ClOrdID/OrigClOrdID), ExecAckStatus (for BN), ExecType, OrdStatus, cum/leaves, last@price, avgPx, text. Enums show text; unknown codes show in red; missing text shows as “-” in green.
+- Tenor is computed from TradeDate to ValueDate skipping weekends; SPOT = T+2, TOM = T+1, TOD = T+0, otherwise FWD. (no holiday calendars).
+- If a `--fix` override cannot be found, decoding falls back to the auto-detected dictionary with a warning on stderr and a banner at runtime.
 
 # Third-Party Specifications
 

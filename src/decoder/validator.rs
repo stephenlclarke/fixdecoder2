@@ -123,6 +123,37 @@ fn validate_field_enums_and_types(
 ) -> Vec<String> {
     let mut errors = Vec::new();
     for field in fields {
+        let presence = dict.tag_presence(field.tag);
+        if !presence.in_primary && !presence.in_fallback {
+            let err = if let Some(fbk) = presence.fallback_key {
+                format!(
+                    "Unknown tag {} in FIX {} and FIX {}",
+                    field.tag, presence.primary_key, fbk
+                )
+            } else {
+                format!("Unknown tag {} in FIX {}", field.tag, presence.primary_key)
+            };
+            errors.push(err.clone());
+            tag_errors.entry(field.tag).or_default().push(err);
+            continue;
+        }
+
+        if presence.in_primary
+            && !presence.in_fallback
+            && matches!(
+                presence.fallback_role,
+                Some(crate::decoder::tag_lookup::FallbackKind::DetectedOverride)
+            )
+            && let Some(fbk) = presence.fallback_key
+        {
+            let err = format!(
+                "Tag {} is defined in override FIX {} but unknown in detected FIX {}",
+                field.tag, presence.primary_key, fbk
+            );
+            errors.push(err.clone());
+            tag_errors.entry(field.tag).or_default().push(err);
+        }
+
         if let Some(enums) = dict.enums_for(field.tag)
             && !enums.contains_key(&field.value)
         {
@@ -390,7 +421,7 @@ mod tests {
             },
         };
 
-        FixTagLookup::from_dictionary(&dict)
+        FixTagLookup::from_dictionary(&dict, "TEST")
     }
 
     fn build_message(fields: &[(u32, &str)], declared_body_len: Option<usize>) -> String {

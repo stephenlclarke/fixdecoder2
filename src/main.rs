@@ -12,21 +12,25 @@
 mod decoder;
 mod fix;
 
+use crate::decoder::colours;
 use anyhow::{Context, Result, anyhow};
 use atty::Stream;
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
 use decoder::{
-    DisplayStyle, FixDictionary, disable_output_colours, display_component, display_message,
-    list_all_components, list_all_messages, list_all_tags, prettify_files, print_component_columns,
-    print_message_columns, print_tag_details, print_tags_in_columns, register_fix_dictionary,
-    schema::SchemaTree, set_validation,
+    DisplayStyle, FixDictionary, PrettifyContext, disable_output_colours, display_component,
+    display_message, list_all_components, list_all_messages, list_all_tags, prettify_files,
+    print_component_columns, print_message_columns, print_tag_details, print_tags_in_columns,
+    register_fix_dictionary, schema::SchemaTree, summary::OrderSummary, tag_lookup,
 };
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::io::Write;
+use std::process;
 use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
 
 /// Wrapper for a custom FIX dictionary sourced from `--xml` along with its path.
 struct CustomDictionary {
@@ -63,6 +67,7 @@ fn sha() -> &'static str {
 
 /// Determine the Git remote that best describes the source tree.  Useful
 /// when users report bugs and need to know where the code originated.
+#[allow(dead_code)]
 fn git_url() -> &'static str {
     option_env!("FIXDECODER_GIT_URL").unwrap_or("https://github.com/stephenlclarke/fixdecoder2.git")
 }
@@ -88,10 +93,19 @@ fn version_str() -> &'static str {
     VERSION_STR.get_or_init(version_string).as_str()
 }
 
+fn install_interrupt_handler() -> Result<()> {
+    ctrlc::set_handler(|| {
+        let _ = io::stdout().write_all(b"\n\n");
+        let _ = io::stdout().flush();
+        decoder::prettifier::interrupt_flag().store(true, Ordering::Relaxed);
+    })
+    .context("failed to install Ctrl+C handler")
+}
+
 /// Conventional `main` that defers to `run` so tests can call the logic
 /// without having to spin up a separate process.
 fn main() {
-    std::process::exit(match run() {
+    process::exit(match run() {
         Ok(code) => code,
         Err(err) => {
             eprintln!("{err}");
@@ -104,7 +118,8 @@ fn main() {
 /// and finally drive the prettifier.  Everything user-facing goes through
 /// here, so the structure favours clarity over cleverness.
 fn run() -> Result<i32> {
-    print_version_banner();
+    install_interrupt_handler()?;
+    println!("{}", version_string());
 
     let cmd = build_cli();
     let matches = match cmd.try_get_matches() {
@@ -126,8 +141,6 @@ fn run() -> Result<i32> {
     if opts.show_version {
         return Ok(0);
     }
-
-    set_validation(opts.validate);
 
     let custom_dicts = load_custom_dictionaries(&opts.xml_paths)?;
     ensure_valid_fix_version(&opts, &custom_dicts)?;
@@ -152,16 +165,41 @@ fn run() -> Result<i32> {
         opts.files.clone()
     };
 
+    let mut summary = opts.summary.then(|| OrderSummary::new(opts.delimiter));
+    let fix_override = opts
+        .fix_from_user
+        .then(|| normalise_fix_key(&opts.fix_version))
+        .flatten();
     let mut stdout = io::stdout();
     let mut stderr = io::stderr();
-    let code = prettify_files(
-        &files,
-        &mut stdout,
-        &mut stderr,
-        &obfuscator,
-        opts.delimiter,
-    );
-    Ok(code)
+    let mut ctx = PrettifyContext {
+        out: &mut stdout,
+        err_out: &mut stderr,
+        obfuscator: &obfuscator,
+        display_delimiter: opts.delimiter,
+        summary: &mut summary,
+        fix_override: fix_override.as_deref(),
+        follow: opts.follow,
+        live_status_enabled: atty::is(Stream::Stdout),
+        validation_enabled: opts.validate,
+        message_counts: std::collections::HashMap::new(),
+        counts_dirty: false,
+        interrupted: decoder::prettifier::interrupt_flag(),
+    };
+    let code = prettify_files(&files, &mut ctx);
+
+    if tag_lookup::override_warn_triggered() {
+        let colours = colours::palette();
+        writeln!(
+            stderr,
+            "{}Notice:{} FIX override not found; decoded using detected dictionary",
+            colours.error, colours.reset
+        )
+        .ok();
+    }
+
+    let interrupted = decoder::prettifier::interrupt_flag().load(Ordering::Relaxed);
+    Ok(if interrupted { 130 } else { code })
 }
 
 /// Construct the `clap` command with all supported arguments.  Options are
@@ -246,6 +284,19 @@ fn build_cli() -> Command {
             .action(ArgAction::Append)
             .trailing_var_arg(true),
     )
+    .arg(
+        Arg::new("summary")
+            .long("summary")
+            .action(ArgAction::SetTrue)
+            .help("Track order state across messages and print a summary"),
+    )
+    .arg(
+        Arg::new("follow")
+            .long("follow")
+            .short('f')
+            .action(ArgAction::SetTrue)
+            .help("Stream input like tail -f"),
+    )
 }
 
 /// Add a `--name[=VALUE]` argument that can be used with or without a value (defaulting to “true”).
@@ -301,6 +352,9 @@ struct CliOptions {
     validate: bool,
     colour: Option<bool>,
     show_version: bool,
+    summary: bool,
+    #[allow(dead_code)]
+    follow: bool,
     files: Vec<String>,
     delimiter: char,
 }
@@ -344,6 +398,8 @@ impl CliOptions {
             validate: matches.get_flag("validate"),
             colour: parse_colour(matches.get_one::<String>("colour"))?,
             show_version: matches.get_flag("version"),
+            summary: matches.get_flag("summary"),
+            follow: matches.get_flag("follow"),
             files,
             delimiter: parse_delimiter(matches.get_one::<String>("delimiter"))?,
         })
@@ -398,6 +454,7 @@ fn load_custom_dictionaries(paths: &[String]) -> Result<HashMap<String, CustomDi
         let key = dictionary_key(&dict);
         ensure_session_components(&key, &mut dict);
         register_fix_dictionary(&key, &dict);
+        tag_lookup::clear_override_cache_for(&key);
         if let Some(existing) = dicts.insert(
             key.clone(),
             CustomDictionary {
@@ -565,11 +622,7 @@ fn find_message<'a>(
         .or_else(|| schema.messages.values().find(|m| m.msg_type == query))
 }
 
-fn print_version_banner() {
-    println!("{}", version_string());
-    print_git_clone();
-}
-
+#[allow(dead_code)]
 fn print_git_clone() {
     println!("  git clone {}\n", git_url());
 }
@@ -872,6 +925,8 @@ mod tests {
             validate: false,
             colour: None,
             show_version: false,
+            summary: false,
+            follow: false,
             files: Vec::new(),
             delimiter: '\u{0001}',
         }

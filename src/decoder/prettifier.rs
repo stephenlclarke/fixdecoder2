@@ -3,21 +3,50 @@
 
 use crate::decoder::colours::{disable_colours, palette};
 use crate::decoder::fixparser::{FieldValue, parse_fix};
-use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary};
+use crate::decoder::summary::OrderSummary;
+use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary_with_override};
 use crate::decoder::validator;
 use crate::fix;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use terminal_size::{Width, terminal_size};
 
-static VALIDATION_ENABLED: AtomicBool = AtomicBool::new(false);
+/// Shared context for prettification to keep function signatures concise.
+pub struct PrettifyContext<'a> {
+    pub out: &'a mut dyn Write,
+    pub err_out: &'a mut dyn Write,
+    pub obfuscator: &'a fix::Obfuscator,
+    pub display_delimiter: char,
+    pub summary: &'a mut Option<OrderSummary>,
+    pub fix_override: Option<&'a str>,
+    pub follow: bool,
+    pub live_status_enabled: bool,
+    pub validation_enabled: bool,
+    pub message_counts: HashMap<String, MsgTypeCount>,
+    pub counts_dirty: bool,
+    pub interrupted: &'static AtomicBool,
+}
+
+#[derive(Default, Clone)]
+pub struct MsgTypeCount {
+    pub count: usize,
+    pub label: Option<String>,
+}
 
 static FIX_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"8=FIX.*?10=\d{3}\u{0001}").expect("valid regex"));
+
+static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+
+/// Shared interruption flag set by the SIGINT handler to allow graceful shutdowns.
+pub fn interrupt_flag() -> &'static AtomicBool {
+    &INTERRUPTED
+}
 
 /// Best-effort terminal width detection for separator rendering.
 fn terminal_width() -> usize {
@@ -26,16 +55,6 @@ fn terminal_width() -> usize {
     } else {
         80
     }
-}
-
-/// Enable or disable validation of FIX messages during prettification.
-pub fn set_validation(enabled: bool) {
-    VALIDATION_ENABLED.store(enabled, Ordering::Relaxed);
-}
-
-/// Returns whether validation is currently enabled for prettification.
-pub fn validation_enabled() -> bool {
-    VALIDATION_ENABLED.load(Ordering::Relaxed)
 }
 
 /// Render a single FIX message into a human-friendly string using the provided dictionary.
@@ -97,6 +116,20 @@ fn build_tag_order(
     dict: &FixTagLookup,
     annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
 ) -> Vec<u32> {
+    let trailer_order = {
+        let order = dict.trailer_tags();
+        if order.is_empty() {
+            vec![10u32]
+        } else {
+            order.to_vec()
+        }
+    };
+    let trailer_set: HashSet<u32> = trailer_order.iter().copied().collect();
+    let mut trailer_present: HashSet<u32> = fields
+        .iter()
+        .filter(|f| trailer_set.contains(&f.tag))
+        .map(|f| f.tag)
+        .collect();
     let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
     let message_def: Option<MessageDef> = msg_type
         .as_deref()
@@ -116,46 +149,159 @@ fn build_tag_order(
         }
     };
 
+    // Deduplicate while preserving order to avoid churn when we later reinsert canonical tags.
+    let mut seen = HashSet::new();
+    ordered_tags.retain(|tag| seen.insert(*tag));
+
+    // Ensure canonical header/trailer tags are in sensible positions even if the dictionary omits them.
+    let canonical_header = [8u32, 9, 35, 49, 56, 34, 52];
+
+    // Strip header/trailer from their existing positions so we can place them deterministically.
+    ordered_tags.retain(|tag| {
+        if trailer_set.contains(tag) {
+            trailer_present.insert(*tag);
+        }
+        !(trailer_set.contains(tag) || canonical_header.contains(tag))
+    });
+
+    let mut final_order: Vec<u32> = canonical_header.to_vec();
+    final_order.extend_from_slice(&ordered_tags);
+
     if let Some(ann) = annotations {
-        let mut missing: Vec<u32> = ann
-            .keys()
-            .filter(|tag| !ordered_tags.contains(tag))
-            .copied()
-            .collect();
+        let mut missing: Vec<u32> = ann.keys().copied().collect();
         missing.sort();
-        ordered_tags.extend(missing);
-    }
-
-    ordered_tags
-}
-
-pub fn prettify_files(
-    paths: &[String],
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-) -> i32 {
-    let mut had_error = false;
-
-    if paths.is_empty() {
-        return handle_stdin(out, err_out, obfuscator, display_delimiter);
-    }
-
-    for path in paths {
-        if path == "-" {
-            if handle_stdin(out, err_out, obfuscator, display_delimiter) != 0 {
-                had_error = true;
+        for tag in missing {
+            if trailer_set.contains(&tag) {
+                trailer_present.insert(tag);
+                continue;
             }
+            if canonical_header.contains(&tag) {
+                continue;
+            }
+            if !final_order.contains(&tag) {
+                final_order.push(tag);
+            }
+        }
+    }
+
+    // Append any tags present in the message that were not part of the message definition so
+    // they appear before trailer fields.
+    for field in fields {
+        let tag = field.tag;
+        if trailer_set.contains(&tag) {
+            trailer_present.insert(tag);
             continue;
         }
+        if !final_order.contains(&tag) {
+            final_order.push(tag);
+        }
+    }
 
-        if handle_file(path, out, err_out, obfuscator, display_delimiter).is_err() {
+    for tag in trailer_order {
+        if trailer_present.contains(&tag) && !final_order.contains(&tag) {
+            final_order.push(tag);
+        }
+    }
+
+    final_order
+}
+
+pub fn prettify_files(paths: &[String], ctx: &mut PrettifyContext) -> i32 {
+    let mut had_error = false;
+    let sources = if paths.is_empty() {
+        vec!["-".to_string()]
+    } else {
+        paths.to_vec()
+    };
+
+    for path in sources {
+        let res = if path == "-" {
+            handle_stdin(ctx)
+        } else {
+            handle_file(&path, ctx).map(|_| 0).unwrap_or(1)
+        };
+        if res != 0 {
             had_error = true;
         }
     }
 
+    if let Some(ref mut tracker) = ctx.summary.as_mut() {
+        tracker.render(ctx.out).ok();
+    }
+    let _ = print_message_counts(ctx);
+
     if had_error { 1 } else { 0 }
+}
+
+pub fn print_message_counts(ctx: &mut PrettifyContext) -> io::Result<()> {
+    if ctx.message_counts.is_empty() || !ctx.counts_dirty {
+        return Ok(());
+    }
+    let mut entries: Vec<(&String, &MsgTypeCount)> = ctx.message_counts.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
+
+    let colours = palette();
+    let mut prepared = Vec::new();
+    let mut max_label_width = 0usize;
+    for (mt, info) in &entries {
+        let label_text = info.label.as_deref().unwrap_or("");
+        let label_display = format!(
+            "{}({}{}){}",
+            colours.reset, colours.enumeration, label_text, colours.reset
+        );
+        let width = visible_width(&label_display);
+        max_label_width = max_label_width.max(width);
+        prepared.push((mt, info.count, label_display));
+    }
+
+    let count_col_start = 2 + 3 + 3 + max_label_width + 3;
+    let header_pad = count_col_start.saturating_sub("Message Type".len());
+    writeln!(ctx.out, "Message Type{:<pad$}Count:", "", pad = header_pad)?;
+
+    for (mt, count, label_display) in prepared {
+        let padded_label = pad_ansi(&label_display, max_label_width);
+        writeln!(
+            ctx.out,
+            "  {}{:<3}{}   {}   {}{:>6}{}",
+            colours.value, mt, colours.reset, padded_label, colours.value, count, colours.reset
+        )?;
+    }
+    ctx.counts_dirty = false;
+    Ok(())
+}
+
+fn pad_ansi(text: &str, width: usize) -> String {
+    let visible = visible_width(text);
+    if visible >= width {
+        return text.to_string();
+    }
+    let pad = width - visible;
+    format!("{text}{}", " ".repeat(pad))
+}
+
+fn visible_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut in_esc = false;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_esc {
+            if b == b'm' {
+                in_esc = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == 0x1b {
+            in_esc = true;
+            i += 1;
+            continue;
+        }
+        width += 1;
+        i += 1;
+    }
+    width
 }
 
 /// Write a single field line, including optional enum descriptions and validation errors.
@@ -173,15 +319,20 @@ fn write_field_line(
         colours.tag
     };
     let name = dict.field_name(field.tag);
+    let is_unknown = name.parse::<u32>().ok() == Some(field.tag);
+    let name_coloured = if is_unknown {
+        format!("{}{}{}", colours.error, name, colours.reset)
+    } else {
+        format!("{}{}{}", colours.name, name, colours.reset)
+    };
+    let name_section = format!("{}({}){}", colours.name, name_coloured, colours.reset);
     let desc = dict.enum_description(field.tag, &field.value);
     output.push_str(&format!(
-        "    {}{:4}{} ({}{}{}): {}{}{}",
+        "    {}{:4}{} {}: {}{}{}",
         tag_colour,
         field.tag,
         colours.reset,
-        colours.name,
-        name,
-        colours.reset,
+        name_section,
         colours.value,
         field.value,
         colours.reset
@@ -231,60 +382,69 @@ fn write_missing_line(
 }
 
 /// Handle decoding from stdin (used when no file paths are provided).
-fn handle_stdin(
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-) -> i32 {
-    obfuscator.reset();
-    if !validation_enabled() {
-        let _ = writeln!(out, "Processing: (stdin)\n");
+fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
+    ctx.obfuscator.reset();
+    if !ctx.validation_enabled && ctx.live_status_enabled {
+        let _ = writeln!(ctx.out, "Processing: (stdin)\n");
     }
-    if stream_reader(
-        BufReader::new(io::stdin().lock()),
-        out,
-        obfuscator,
-        display_delimiter,
-    )
-    .is_err()
-    {
-        let colours = palette();
-        let _ = writeln!(
-            err_out,
-            "{}Error reading input{}",
-            colours.error, colours.reset
-        );
-        return 1;
+    loop {
+        let res = stream_reader(BufReader::new(io::stdin().lock()), ctx);
+        match res {
+            Ok(_) if ctx.follow => {
+                if ctx.counts_dirty && ctx.live_status_enabled {
+                    let _ = print_message_counts(ctx);
+                }
+                if ctx.interrupted.load(Ordering::Relaxed) {
+                    return 0;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+            Ok(_) => return 0,
+            Err(_) => {
+                let colours = palette();
+                let _ = writeln!(
+                    ctx.err_out,
+                    "{}Error reading input{}",
+                    colours.error, colours.reset
+                );
+                return 1;
+            }
+        }
     }
-    0
 }
 
 /// Handle decoding from a single file path, printing progress when validation is disabled.
-fn handle_file(
-    path: &str,
-    out: &mut dyn Write,
-    err_out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-) -> io::Result<()> {
-    obfuscator.reset();
+fn handle_file(path: &str, ctx: &mut PrettifyContext) -> io::Result<()> {
+    ctx.obfuscator.reset();
     let colours = palette();
-    if !validation_enabled() {
+    if !ctx.validation_enabled && ctx.live_status_enabled {
         let _ = writeln!(
-            out,
+            ctx.out,
             "Processing: {}{}{}\n",
             colours.file, path, colours.reset
         );
     }
 
     match File::open(path) {
-        Ok(file) => {
-            stream_reader(BufReader::new(file), out, obfuscator, display_delimiter)?;
-        }
+        Ok(file) => loop {
+            let read_any = stream_reader(BufReader::new(file.try_clone()?), ctx)?;
+            if ctx.interrupted.load(Ordering::Relaxed) {
+                break;
+            }
+            if !ctx.follow {
+                break;
+            }
+            if !read_any {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            if ctx.counts_dirty && ctx.live_status_enabled {
+                let _ = print_message_counts(ctx);
+            }
+        },
         Err(err) => {
             let _ = writeln!(
-                err_out,
+                ctx.err_out,
                 "{}Cannot open file: {}{}",
                 colours.error, err, colours.reset
             );
@@ -295,12 +455,7 @@ fn handle_file(
 }
 
 /// Stream lines from a reader, emitting formatted FIX messages (and optionally validation output).
-fn stream_reader<R: BufRead>(
-    mut reader: R,
-    out: &mut dyn Write,
-    obfuscator: &fix::Obfuscator,
-    display_delimiter: char,
-) -> io::Result<()> {
+fn stream_reader<R: BufRead>(mut reader: R, ctx: &mut PrettifyContext) -> io::Result<bool> {
     let mut line = String::new();
     let colours = palette();
     let separator = format!(
@@ -311,12 +466,33 @@ fn stream_reader<R: BufRead>(
     );
 
     let mut line_number = 0usize;
+    let mut read_any = false;
     loop {
-        line.clear();
-        let bytes = reader.read_line(&mut line)?;
-        if bytes == 0 {
+        if ctx.interrupted.load(Ordering::Relaxed) {
             break;
         }
+        line.clear();
+        let bytes = match reader.read_line(&mut line) {
+            Ok(n) => n,
+            Err(e) => {
+                if !ctx.follow {
+                    return Err(e);
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+        };
+        if bytes == 0 {
+            if ctx.follow {
+                if ctx.interrupted.load(Ordering::Relaxed) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(250));
+                continue;
+            }
+            break;
+        }
+        read_any = true;
         line_number += 1;
 
         if line.ends_with('\n') {
@@ -326,73 +502,177 @@ fn stream_reader<R: BufRead>(
             }
         }
 
-        let processed = obfuscator.enabled_line(&line);
-        handle_log_line(&processed, line_number, out, &separator, display_delimiter)?;
+        let processed = ctx.obfuscator.enabled_line(&line);
+        handle_log_line(&processed, line_number, &separator, ctx)?;
     }
 
-    Ok(())
+    Ok(read_any)
 }
 
 /// Process a single log line, extracting FIX messages and rendering prettified output.
 fn handle_log_line(
     line: &str,
     line_number: usize,
-    out: &mut dyn Write,
     separator: &str,
-    display_delimiter: char,
+    ctx: &mut PrettifyContext,
+) -> io::Result<()> {
+    if !ctx.validation_enabled {
+        return process_without_validation(line, separator, ctx);
+    }
+
+    process_with_validation(line, line_number, ctx)
+}
+
+fn process_without_validation(
+    line: &str,
+    separator: &str,
+    ctx: &mut PrettifyContext,
 ) -> io::Result<()> {
     let matches = find_fix_message_indices(line);
     let colours = palette();
 
-    if !validation_enabled() {
-        if matches.is_empty() {
-            writeln!(out, "{}{}{}", colours.line, line, colours.reset)?;
-            return Ok(());
-        }
-
-        let (messages, coloured_line) =
-            extract_messages_and_format(line, &matches, display_delimiter);
-        write!(out, "{coloured_line}")?;
-        write!(out, "{separator}")?;
-
-        for msg in messages {
-            process_fix_message(&msg, out, separator)?;
+    if matches.is_empty() {
+        if ctx.summary.is_none() {
+            writeln!(ctx.out, "{}{}{}", colours.line, line, colours.reset)?;
         }
         return Ok(());
     }
 
+    let (messages, coloured_line) =
+        extract_messages_and_format(line, &matches, ctx.display_delimiter);
+
+    if ctx.summary.is_none() {
+        write!(ctx.out, "{coloured_line}")?;
+        write!(ctx.out, "{separator}")?;
+    }
+
+    record_messages(&messages, ctx);
+    emit_messages(&messages, ctx, separator)?;
+
+    render_summary_footer(ctx)
+}
+
+fn process_with_validation(
+    line: &str,
+    line_number: usize,
+    ctx: &mut PrettifyContext,
+) -> io::Result<()> {
+    let matches = find_fix_message_indices(line);
     if matches.is_empty() {
         return Ok(());
     }
 
-    let mut invalid = Vec::new();
+    for (start, end) in &matches {
+        record_msg_type(&line[*start..*end], ctx);
+        if let Some(ref mut tracker) = ctx.summary.as_mut() {
+            tracker.record_message(&line[*start..*end], ctx.fix_override);
+        }
+    }
+    render_summary_footer(ctx)?;
+
+    let mut header_emitted = false;
+    let colours = palette();
+    let display_line = apply_display_delimiter(line, ctx.display_delimiter);
+
     for (start, end) in matches {
         let msg = &line[start..end];
-        let dict = load_dictionary(msg);
+        let dict = load_dictionary_with_override(msg, ctx.fix_override);
         let report = validator::validate_fix_message(msg, &dict);
         if report.is_clean() {
             continue;
         }
-        let pretty = prettify_with_report(msg, &dict, Some(&report));
-        invalid.push((msg.to_string(), pretty, report.errors));
+        if !header_emitted {
+            writeln!(
+                ctx.out,
+                "Line {}: {}{}{}",
+                line_number, colours.line, display_line, colours.reset
+            )?;
+            header_emitted = true;
+        }
+        stream_invalid_message(ctx, msg, &dict, &report)?;
     }
 
-    if invalid.is_empty() {
+    Ok(())
+}
+
+fn stream_invalid_message(
+    ctx: &mut PrettifyContext,
+    msg: &str,
+    dict: &FixTagLookup,
+    report: &validator::ValidationReport,
+) -> io::Result<()> {
+    let pretty = prettify_with_report(msg, dict, Some(report));
+    write!(ctx.out, "{pretty}")?;
+    writeln!(ctx.out)?;
+    Ok(())
+}
+
+fn record_messages(messages: &[String], ctx: &mut PrettifyContext) {
+    for msg in messages {
+        record_msg_type(msg, ctx);
+        if let Some(ref mut tracker) = ctx.summary.as_mut() {
+            tracker.record_message(msg, ctx.fix_override);
+        }
+    }
+}
+
+fn record_msg_type(msg: &str, ctx: &mut PrettifyContext) {
+    if let Some(mt) = extract_msg_type(msg) {
+        let entry = ctx.message_counts.entry(mt.clone()).or_default();
+        entry.count += 1;
+        if entry.label.is_none() {
+            let dict = load_dictionary_with_override(msg, ctx.fix_override);
+            entry.label = dict.enum_description(35, &mt).map(|s| s.to_string());
+        }
+        ctx.counts_dirty = true;
+    }
+}
+
+fn extract_msg_type(msg: &str) -> Option<String> {
+    const SOH: char = '\u{0001}';
+    for field in msg.split(SOH) {
+        if let Some((tag, val)) = field.split_once('=')
+            && tag == "35"
+        {
+            return Some(val.to_string());
+        }
+    }
+    None
+}
+
+fn emit_messages(
+    messages: &[String],
+    ctx: &mut PrettifyContext,
+    separator: &str,
+) -> io::Result<()> {
+    if ctx.summary.is_some() {
         return Ok(());
     }
 
-    let display_line = apply_display_delimiter(line, display_delimiter);
-    writeln!(
-        out,
-        "Line {}: {}{}{}",
-        line_number, colours.line, display_line, colours.reset
-    )?;
-
-    for (_, pretty, _) in invalid {
-        write!(out, "{pretty}")?;
-        writeln!(out)?;
+    for msg in messages {
+        process_fix_message(
+            msg,
+            ctx.out,
+            separator,
+            ctx.fix_override,
+            ctx.validation_enabled,
+        )?;
     }
+    Ok(())
+}
 
+fn render_summary_footer(ctx: &mut PrettifyContext) -> io::Result<()> {
+    if !ctx.live_status_enabled {
+        return Ok(());
+    }
+    if let Some(ref mut tracker) = ctx.summary.as_mut() {
+        if ctx.follow {
+            let _printed = tracker.render_completed(ctx.out)?;
+            tracker.render_footer(ctx.out)?;
+        } else {
+            tracker.render_footer(ctx.out)?;
+        }
+    }
     Ok(())
 }
 
@@ -462,12 +742,18 @@ fn apply_display_delimiter<'a>(text: &'a str, delimiter: char) -> Cow<'a, str> {
 }
 
 /// Render a single FIX message (and validation errors when enabled) to the output stream.
-fn process_fix_message(msg: &str, out: &mut dyn Write, separator: &str) -> io::Result<()> {
-    let dict = load_dictionary(msg);
+fn process_fix_message(
+    msg: &str,
+    out: &mut dyn Write,
+    separator: &str,
+    fix_override: Option<&str>,
+    validation_enabled: bool,
+) -> io::Result<()> {
+    let dict = load_dictionary_with_override(msg, fix_override);
     let pretty = prettify_with_report(msg, &dict, None);
     write!(out, "{pretty}")?;
 
-    if VALIDATION_ENABLED.load(Ordering::Relaxed) {
+    if validation_enabled {
         let report = validator::validate_fix_message(msg, &dict);
         if !report.errors.is_empty() {
             let colours = palette();
@@ -487,6 +773,23 @@ pub fn disable_output_colours() {
 }
 
 #[cfg(test)]
+fn test_lookup_with_order(field_order: Vec<u32>) -> FixTagLookup {
+    use std::collections::HashMap;
+
+    let mut messages = HashMap::new();
+    messages.insert(
+        "X".to_string(),
+        MessageDef {
+            _name: "X".to_string(),
+            _msg_type: "X".to_string(),
+            field_order,
+            required: Vec::new(),
+        },
+    );
+    FixTagLookup::new_for_tests(messages)
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::decoder::tag_lookup::load_dictionary;
@@ -503,7 +806,6 @@ mod tests {
     #[test]
     fn validation_only_outputs_invalid_messages() {
         let _lock = TEST_GUARD.lock().unwrap();
-        set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let body = format!("35=0{SOH}34=1{SOH}49=AAA{SOH}52=20240101-00:00:00{SOH}56=BBB{SOH}");
         let declared_len = body.len() + 1; // intentionally wrong
@@ -512,14 +814,23 @@ mod tests {
         let msg = format!("{msg_without_checksum}10={checksum:03}{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-        )
-        .unwrap();
-        set_validation(false);
+        let mut err = io::sink();
+        let mut summary = None;
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+            live_status_enabled: true,
+            validation_enabled: true,
+            message_counts: HashMap::new(),
+            counts_dirty: false,
+            interrupted: interrupt_flag(),
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -539,7 +850,6 @@ mod tests {
     #[test]
     fn validation_skips_valid_messages() {
         let _lock = TEST_GUARD.lock().unwrap();
-        set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let lookup = load_dictionary(&format!("8=FIX.4.4{SOH}35=0{SOH}10=000{SOH}"));
         let order = lookup
@@ -567,14 +877,23 @@ mod tests {
         );
         let line = format!("{msg}\n");
         let mut out = Vec::new();
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-        )
-        .unwrap();
-        set_validation(false);
+        let mut err = io::sink();
+        let mut summary = None;
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+            live_status_enabled: true,
+            validation_enabled: true,
+            message_counts: HashMap::new(),
+            counts_dirty: false,
+            interrupted: interrupt_flag(),
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -587,19 +906,27 @@ mod tests {
     fn validation_inserts_missing_tags() {
         let _lock = TEST_GUARD.lock().unwrap();
         disable_output_colours();
-        set_validation(true);
         let obfuscator = fix::create_obfuscator(false);
         let msg = format!("8=FIX.4.4{SOH}9=005{SOH}10=999{SOH}");
         let line = format!("{msg}\n");
         let mut out = Vec::new();
-        stream_reader(
-            BufReader::new(Cursor::new(line)),
-            &mut out,
-            &obfuscator,
-            '|',
-        )
-        .unwrap();
-        set_validation(false);
+        let mut err = io::sink();
+        let mut summary = None;
+        let mut ctx = PrettifyContext {
+            out: &mut out,
+            err_out: &mut err,
+            obfuscator: &obfuscator,
+            display_delimiter: '|',
+            summary: &mut summary,
+            fix_override: None,
+            follow: false,
+            live_status_enabled: true,
+            validation_enabled: true,
+            message_counts: HashMap::new(),
+            counts_dirty: false,
+            interrupted: interrupt_flag(),
+        };
+        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -660,6 +987,75 @@ mod tests {
             pos_55 < pos_10,
             "body tag 55 should appear before checksum: {:?}",
             tags
+        );
+    }
+
+    #[test]
+    fn header_and_trailer_are_repositioned_when_out_of_place() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+
+        let dict = test_lookup_with_order(vec![37, 11, 150, 8, 9, 35, 10]);
+        let fields = vec![
+            FieldValue {
+                tag: 8,
+                value: "FIX.4.4".into(),
+            },
+            FieldValue {
+                tag: 9,
+                value: "100".into(),
+            },
+            FieldValue {
+                tag: 35,
+                value: "X".into(),
+            },
+            FieldValue {
+                tag: 37,
+                value: "ABC".into(),
+            },
+            FieldValue {
+                tag: 150,
+                value: "0".into(),
+            },
+            FieldValue {
+                tag: 553,
+                value: "user".into(),
+            },
+            FieldValue {
+                tag: 10,
+                value: "000".into(),
+            },
+        ];
+
+        let order = build_tag_order(&fields, &dict, None);
+        let header_prefix: Vec<u32> = order.iter().take(7).copied().collect();
+        assert_eq!(
+            header_prefix,
+            vec![8, 9, 35, 49, 56, 34, 52],
+            "canonical header should lead the order"
+        );
+
+        let pos_order_id = order
+            .iter()
+            .position(|t| *t == 37)
+            .expect("body tag should be present");
+        assert!(
+            pos_order_id >= 7,
+            "body tags should follow header: {:?}",
+            order
+        );
+        assert_eq!(
+            order.last(),
+            Some(&10),
+            "checksum must be forced to the end: {:?}",
+            order
+        );
+        let pos_user = order.iter().position(|t| *t == 553).unwrap();
+        let pos_checksum = order.iter().position(|t| *t == 10).unwrap();
+        assert!(
+            pos_user < pos_checksum,
+            "unknown body tags should remain before trailer: {:?}",
+            order
         );
     }
 

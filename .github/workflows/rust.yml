@@ -154,6 +154,15 @@ jobs:
             echo "Python is required to compute the lockfile hash." >&2
             exit 1
           fi
+      - name: Cache Rust toolchain and cargo bin
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo/bin
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -176,6 +185,14 @@ jobs:
       - name: Ensure make is installed (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y make
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Run scan and coverage (includes audit conversion)
         run: make scan coverage
       - name: Upload coverage artifact
@@ -199,31 +216,48 @@ jobs:
     if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain for Sonar (cargo/clippy)
-        shell: bash
+      - name: Determine toolchain channel
+        id: toolchain-id
         run: |
-          if ! command -v cargo >/dev/null 2>&1; then
-            curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
-            echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          toolchain="stable"
+          if [ -f rust-toolchain.toml ]; then
+            parsed=$(grep -m1 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
+            toolchain=${parsed:-$toolchain}
+          elif [ -f rust-toolchain ]; then
+            toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
           fi
-          export PATH="$HOME/.cargo/bin:${PATH}"
-          if command -v rustup >/dev/null 2>&1; then
-            rustup component add clippy >/dev/null 2>&1 || true
-          fi
-
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+      - name: Compute lockfile hash
+        id: lockfile-hash
+        run: echo "hash=$(sha256sum Cargo.lock | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
+      - name: Cache Rust toolchain for Clippy
+        uses: actions/cache@v4
+        with:
+          path: |
+            $HOME/.cargo/bin
+            $HOME/.rustup
+          key: sonar-rust-${{ runner.os }}-${{ steps.toolchain-id.outputs.toolchain }}-${{ steps.lockfile-hash.outputs.hash }}
+          restore-keys: |
+            sonar-rust-${{ runner.os }}-${{ steps.toolchain-id.outputs.toolchain }}-
       - name: Download coverage artifact
         uses: actions/download-artifact@v4
         with:
           name: coverage-xml
           path: target/coverage
-
       - name: Download sonar issues artifact
         uses: actions/download-artifact@v4
         with:
           name: sonar-generic-issues
           path: target/coverage
-
+      - name: Install Rust (for Clippy sensor)
+        run: |
+          CARGO_HOME="${HOME}/.cargo"
+          RUSTUP_HOME="${HOME}/.rustup"
+          mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
+          echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
+          apt-get update && apt-get install -y curl ca-certificates build-essential
+          curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain ${{ steps.toolchain-id.outputs.toolchain }}
+          "$CARGO_HOME/bin/rustup" component add clippy
       - name: Run sonar-scanner
         uses: sonarsource/sonarcloud-github-action@v2.1.0
         env:
@@ -271,7 +305,7 @@ jobs:
             esac
           done
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Version ${{ steps.version.outputs.version }}
