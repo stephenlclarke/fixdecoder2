@@ -2,9 +2,12 @@
 // SPDX-FileCopyrightText: 2025 Steve Clarke <stephenlclarke@mac.com> - https://xyzzy.tools
 
 use crate::decoder::colours::{disable_colours, palette};
+use crate::decoder::display::{pad_ansi, terminal_width, visible_width};
 use crate::decoder::fixparser::{FieldValue, parse_fix};
 use crate::decoder::summary::OrderSummary;
-use crate::decoder::tag_lookup::{FixTagLookup, MessageDef, load_dictionary_with_override};
+#[cfg(test)]
+use crate::decoder::tag_lookup::MessageDef;
+use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary_with_override};
 use crate::decoder::validator;
 use crate::fix;
 use once_cell::sync::Lazy;
@@ -14,7 +17,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
-use terminal_size::{Width, terminal_size};
+use std::time::Duration;
 
 /// Shared context for prettification to keep function signatures concise.
 pub struct PrettifyContext<'a> {
@@ -42,19 +45,11 @@ static FIX_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"8=FIX.*?10=\d{3}\u{0001}").expect("valid regex"));
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+const FOLLOW_SLEEP: Duration = Duration::from_millis(250);
 
 /// Shared interruption flag set by the SIGINT handler to allow graceful shutdowns.
 pub fn interrupt_flag() -> &'static AtomicBool {
     &INTERRUPTED
-}
-
-/// Best-effort terminal width detection for separator rendering.
-fn terminal_width() -> usize {
-    if let Some((Width(w), _)) = terminal_size() {
-        w as usize
-    } else {
-        80
-    }
 }
 
 /// Render a single FIX message into a human-friendly string using the provided dictionary.
@@ -116,76 +111,129 @@ fn build_tag_order(
     dict: &FixTagLookup,
     annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
 ) -> Vec<u32> {
-    let trailer_order = {
-        let order = dict.trailer_tags();
-        if order.is_empty() {
-            vec![10u32]
-        } else {
-            order.to_vec()
-        }
-    };
+    let trailer_order = trailer_tags(dict);
     let trailer_set: HashSet<u32> = trailer_order.iter().copied().collect();
-    let mut trailer_present: HashSet<u32> = fields
+    let mut trailer_present = collect_trailer_tags(fields, &trailer_set);
+
+    let canonical_header = canonical_header_tags();
+    let mut final_order = Vec::new();
+    final_order.extend_from_slice(canonical_header);
+
+    let base_order = base_message_order(
+        fields,
+        dict,
+        canonical_header,
+        &trailer_set,
+        &mut trailer_present,
+    );
+    final_order.extend(base_order);
+
+    if let Some(ann) = annotations {
+        append_annotation_tags(
+            &mut final_order,
+            ann,
+            canonical_header,
+            &trailer_set,
+            &mut trailer_present,
+        );
+    }
+
+    append_message_fields(fields, &mut final_order, &trailer_set, &mut trailer_present);
+    append_trailer_tags(&mut final_order, &trailer_order, &trailer_present);
+
+    final_order
+}
+
+fn canonical_header_tags() -> &'static [u32; 7] {
+    &[8u32, 9, 35, 49, 56, 34, 52]
+}
+
+fn trailer_tags(dict: &FixTagLookup) -> Vec<u32> {
+    let order = dict.trailer_tags();
+    if order.is_empty() {
+        vec![10u32]
+    } else {
+        order.to_vec()
+    }
+}
+
+fn collect_trailer_tags(fields: &[FieldValue], trailer_set: &HashSet<u32>) -> HashSet<u32> {
+    fields
         .iter()
         .filter(|f| trailer_set.contains(&f.tag))
         .map(|f| f.tag)
-        .collect();
+        .collect()
+}
+
+fn message_field_order(fields: &[FieldValue], dict: &FixTagLookup) -> Option<Vec<u32>> {
     let msg_type = fields.iter().find(|f| f.tag == 35).map(|f| f.value.clone());
-    let message_def: Option<MessageDef> = msg_type
+    msg_type
         .as_deref()
-        .and_then(|mt| dict.message_def(mt).cloned());
+        .and_then(|mt| dict.message_def(mt).cloned())
+        .map(|def| def.field_order)
+}
 
-    let mut ordered_tags: Vec<u32> = match message_def.as_ref() {
-        Some(def) => def.field_order.clone(),
-        None => {
-            // Best-effort ordering when MsgType is missing: emit header tags in canonical order first, then existing fields.
-            let mut base = vec![8, 9, 35];
-            for f in fields {
-                if !base.contains(&f.tag) {
-                    base.push(f.tag);
-                }
-            }
-            base
-        }
-    };
-
-    // Deduplicate while preserving order to avoid churn when we later reinsert canonical tags.
-    let mut seen = HashSet::new();
-    ordered_tags.retain(|tag| seen.insert(*tag));
-
-    // Ensure canonical header/trailer tags are in sensible positions even if the dictionary omits them.
-    let canonical_header = [8u32, 9, 35, 49, 56, 34, 52];
-
-    // Strip header/trailer from their existing positions so we can place them deterministically.
-    ordered_tags.retain(|tag| {
-        if trailer_set.contains(tag) {
-            trailer_present.insert(*tag);
-        }
-        !(trailer_set.contains(tag) || canonical_header.contains(tag))
-    });
-
-    let mut final_order: Vec<u32> = canonical_header.to_vec();
-    final_order.extend_from_slice(&ordered_tags);
-
-    if let Some(ann) = annotations {
-        let mut missing: Vec<u32> = ann.keys().copied().collect();
-        missing.sort();
-        for tag in missing {
-            if trailer_set.contains(&tag) {
-                trailer_present.insert(tag);
-                continue;
-            }
-            if canonical_header.contains(&tag) {
-                continue;
-            }
-            if !final_order.contains(&tag) {
-                final_order.push(tag);
-            }
+fn fallback_field_order(fields: &[FieldValue]) -> Vec<u32> {
+    let mut base = vec![8, 9, 35];
+    for f in fields {
+        if !base.contains(&f.tag) {
+            base.push(f.tag);
         }
     }
+    base
+}
 
-    // Append any tags present in the message that were not part of the message definition so
-    // they appear before trailer fields.
+fn dedup_order(order: Vec<u32>) -> Vec<u32> {
+    let mut seen = HashSet::new();
+    order.into_iter().filter(|tag| seen.insert(*tag)).collect()
+}
+
+fn base_message_order(
+    fields: &[FieldValue],
+    dict: &FixTagLookup,
+    canonical_header: &[u32],
+    trailer_set: &HashSet<u32>,
+    trailer_present: &mut HashSet<u32>,
+) -> Vec<u32> {
+    let order = message_field_order(fields, dict).unwrap_or_else(|| fallback_field_order(fields));
+    let mut deduped = dedup_order(order);
+    deduped.retain(|tag| {
+        if trailer_set.contains(tag) {
+            trailer_present.insert(*tag);
+            return false;
+        }
+        !canonical_header.contains(tag)
+    });
+    deduped
+}
+
+fn append_annotation_tags(
+    final_order: &mut Vec<u32>,
+    annotations: &std::collections::HashMap<u32, Vec<String>>,
+    canonical_header: &[u32],
+    trailer_set: &HashSet<u32>,
+    trailer_present: &mut HashSet<u32>,
+) {
+    let mut missing: Vec<u32> = annotations.keys().copied().collect();
+    missing.sort();
+    for tag in missing {
+        if trailer_set.contains(&tag) {
+            trailer_present.insert(tag);
+            continue;
+        }
+        if canonical_header.contains(&tag) || final_order.contains(&tag) {
+            continue;
+        }
+        final_order.push(tag);
+    }
+}
+
+fn append_message_fields(
+    fields: &[FieldValue],
+    final_order: &mut Vec<u32>,
+    trailer_set: &HashSet<u32>,
+    trailer_present: &mut HashSet<u32>,
+) {
     for field in fields {
         let tag = field.tag;
         if trailer_set.contains(&tag) {
@@ -196,14 +244,18 @@ fn build_tag_order(
             final_order.push(tag);
         }
     }
+}
 
+fn append_trailer_tags(
+    final_order: &mut Vec<u32>,
+    trailer_order: &[u32],
+    trailer_present: &HashSet<u32>,
+) {
     for tag in trailer_order {
-        if trailer_present.contains(&tag) && !final_order.contains(&tag) {
-            final_order.push(tag);
+        if trailer_present.contains(tag) && !final_order.contains(tag) {
+            final_order.push(*tag);
         }
     }
-
-    final_order
 }
 
 pub fn prettify_files(paths: &[String], ctx: &mut PrettifyContext) -> i32 {
@@ -268,40 +320,6 @@ pub fn print_message_counts(ctx: &mut PrettifyContext) -> io::Result<()> {
     }
     ctx.counts_dirty = false;
     Ok(())
-}
-
-fn pad_ansi(text: &str, width: usize) -> String {
-    let visible = visible_width(text);
-    if visible >= width {
-        return text.to_string();
-    }
-    let pad = width - visible;
-    format!("{text}{}", " ".repeat(pad))
-}
-
-fn visible_width(text: &str) -> usize {
-    let mut width = 0;
-    let mut in_esc = false;
-    let bytes = text.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let b = bytes[i];
-        if in_esc {
-            if b == b'm' {
-                in_esc = false;
-            }
-            i += 1;
-            continue;
-        }
-        if b == 0x1b {
-            in_esc = true;
-            i += 1;
-            continue;
-        }
-        width += 1;
-        i += 1;
-    }
-    width
 }
 
 /// Write a single field line, including optional enum descriptions and validation errors.
@@ -384,32 +402,18 @@ fn write_missing_line(
 /// Handle decoding from stdin (used when no file paths are provided).
 fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
     ctx.obfuscator.reset();
-    if !ctx.validation_enabled && ctx.live_status_enabled {
-        let _ = writeln!(ctx.out, "Processing: (stdin)\n");
-    }
-    loop {
-        let res = stream_reader(BufReader::new(io::stdin().lock()), ctx);
-        match res {
-            Ok(_) if ctx.follow => {
-                if ctx.counts_dirty && ctx.live_status_enabled {
-                    let _ = print_message_counts(ctx);
-                }
-                if ctx.interrupted.load(Ordering::Relaxed) {
-                    return 0;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                continue;
-            }
-            Ok(_) => return 0,
-            Err(_) => {
-                let colours = palette();
-                let _ = writeln!(
-                    ctx.err_out,
-                    "{}Error reading input{}",
-                    colours.error, colours.reset
-                );
-                return 1;
-            }
+    announce_source("(stdin)", ctx);
+    let mut reader = BufReader::new(io::stdin().lock());
+    match stream_until_complete(&mut reader, ctx) {
+        Ok(_) => 0,
+        Err(_) => {
+            let colours = palette();
+            let _ = writeln!(
+                ctx.err_out,
+                "{}Error reading input{}",
+                colours.error, colours.reset
+            );
+            1
         }
     }
 }
@@ -417,45 +421,23 @@ fn handle_stdin(ctx: &mut PrettifyContext) -> i32 {
 /// Handle decoding from a single file path, printing progress when validation is disabled.
 fn handle_file(path: &str, ctx: &mut PrettifyContext) -> io::Result<()> {
     ctx.obfuscator.reset();
-    let colours = palette();
-    if !ctx.validation_enabled && ctx.live_status_enabled {
-        let _ = writeln!(
-            ctx.out,
-            "Processing: {}{}{}\n",
-            colours.file, path, colours.reset
-        );
-    }
+    announce_source(path, ctx);
 
-    match File::open(path) {
-        Ok(file) => loop {
-            let read_any = stream_reader(BufReader::new(file.try_clone()?), ctx)?;
-            if ctx.interrupted.load(Ordering::Relaxed) {
-                break;
-            }
-            if !ctx.follow {
-                break;
-            }
-            if !read_any {
-                std::thread::sleep(std::time::Duration::from_millis(250));
-            }
-            if ctx.counts_dirty && ctx.live_status_enabled {
-                let _ = print_message_counts(ctx);
-            }
-        },
-        Err(err) => {
-            let _ = writeln!(
-                ctx.err_out,
-                "{}Cannot open file: {}{}",
-                colours.error, err, colours.reset
-            );
-            return Err(err);
-        }
-    }
-    Ok(())
+    let file = File::open(path).map_err(|err| {
+        let colours = palette();
+        let _ = writeln!(
+            ctx.err_out,
+            "{}Cannot open file: {}{}",
+            colours.error, err, colours.reset
+        );
+        err
+    })?;
+    let mut reader = BufReader::new(file);
+    stream_until_complete(&mut reader, ctx)
 }
 
 /// Stream lines from a reader, emitting formatted FIX messages (and optionally validation output).
-fn stream_reader<R: BufRead>(mut reader: R, ctx: &mut PrettifyContext) -> io::Result<bool> {
+fn stream_reader<R: BufRead>(reader: &mut R, ctx: &mut PrettifyContext) -> io::Result<bool> {
     let mut line = String::new();
     let colours = palette();
     let separator = format!(
@@ -467,46 +449,77 @@ fn stream_reader<R: BufRead>(mut reader: R, ctx: &mut PrettifyContext) -> io::Re
 
     let mut line_number = 0usize;
     let mut read_any = false;
-    loop {
-        if ctx.interrupted.load(Ordering::Relaxed) {
-            break;
-        }
+    while !ctx.interrupted.load(Ordering::Relaxed) {
         line.clear();
-        let bytes = match reader.read_line(&mut line) {
-            Ok(n) => n,
-            Err(e) => {
-                if !ctx.follow {
-                    return Err(e);
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                continue;
-            }
-        };
+        let bytes = read_line_with_follow(reader, &mut line, ctx.follow, ctx.interrupted)?;
         if bytes == 0 {
-            if ctx.follow {
-                if ctx.interrupted.load(Ordering::Relaxed) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_millis(250));
-                continue;
-            }
             break;
         }
         read_any = true;
         line_number += 1;
 
-        if line.ends_with('\n') {
-            line.pop();
-            if line.ends_with('\r') {
-                line.pop();
-            }
-        }
+        trim_line_endings(&mut line);
 
         let processed = ctx.obfuscator.enabled_line(&line);
         handle_log_line(&processed, line_number, &separator, ctx)?;
     }
 
     Ok(read_any)
+}
+
+fn stream_until_complete<R: BufRead>(reader: &mut R, ctx: &mut PrettifyContext) -> io::Result<()> {
+    loop {
+        let read_any = stream_reader(reader, ctx)?;
+        if ctx.interrupted.load(Ordering::Relaxed) || !ctx.follow {
+            return Ok(());
+        }
+        if !read_any {
+            std::thread::sleep(FOLLOW_SLEEP);
+        }
+        if ctx.counts_dirty && ctx.live_status_enabled {
+            let _ = print_message_counts(ctx);
+        }
+    }
+}
+
+fn announce_source(label: &str, ctx: &mut PrettifyContext) {
+    if !ctx.validation_enabled && ctx.live_status_enabled {
+        let colours = palette();
+        let _ = writeln!(
+            ctx.out,
+            "Processing: {}{}{}\n",
+            colours.file, label, colours.reset
+        );
+    }
+}
+
+fn trim_line_endings(line: &mut String) {
+    if line.ends_with('\n') {
+        line.pop();
+        if line.ends_with('\r') {
+            line.pop();
+        }
+    }
+}
+
+fn read_line_with_follow<R: BufRead>(
+    reader: &mut R,
+    buf: &mut String,
+    follow: bool,
+    interrupted: &AtomicBool,
+) -> io::Result<usize> {
+    loop {
+        match reader.read_line(buf) {
+            Ok(n) => return Ok(n),
+            Err(e) if !follow => return Err(e),
+            Err(_) => {
+                if interrupted.load(Ordering::Relaxed) {
+                    return Ok(0);
+                }
+                std::thread::sleep(FOLLOW_SLEEP);
+            }
+        }
+    }
 }
 
 /// Process a single log line, extracting FIX messages and rendering prettified output.
@@ -830,7 +843,8 @@ mod tests {
             counts_dirty: false,
             interrupted: interrupt_flag(),
         };
-        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
+        let mut reader = BufReader::new(Cursor::new(line));
+        stream_reader(&mut reader, &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -893,7 +907,8 @@ mod tests {
             counts_dirty: false,
             interrupted: interrupt_flag(),
         };
-        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
+        let mut reader = BufReader::new(Cursor::new(line));
+        stream_reader(&mut reader, &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -926,7 +941,8 @@ mod tests {
             counts_dirty: false,
             interrupted: interrupt_flag(),
         };
-        stream_reader(BufReader::new(Cursor::new(line)), &mut ctx).unwrap();
+        let mut reader = BufReader::new(Cursor::new(line));
+        stream_reader(&mut reader, &mut ctx).unwrap();
 
         let output = String::from_utf8(out).unwrap();
         assert!(
@@ -960,6 +976,72 @@ mod tests {
             1,
             "missing tag 34 should appear exactly once: {pretty}"
         );
+    }
+
+    #[test]
+    fn build_tag_order_respects_annotations_and_trailer() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        let mut messages = HashMap::new();
+        messages.insert(
+            "X".to_string(),
+            MessageDef {
+                _name: "X".to_string(),
+                _msg_type: "X".to_string(),
+                field_order: vec![8, 9, 35, 55],
+                required: Vec::new(),
+            },
+        );
+        let dict = FixTagLookup::new_for_tests(messages);
+        let fields = vec![
+            FieldValue {
+                tag: 8,
+                value: "FIX.4.4".into(),
+            },
+            FieldValue {
+                tag: 9,
+                value: "5".into(),
+            },
+            FieldValue {
+                tag: 35,
+                value: "X".into(),
+            },
+            FieldValue {
+                tag: 55,
+                value: "AAPL".into(),
+            },
+            FieldValue {
+                tag: 99,
+                value: "Z".into(),
+            },
+            FieldValue {
+                tag: 10,
+                value: "000".into(),
+            },
+        ];
+        let mut annotations = std::collections::HashMap::new();
+        annotations.insert(77u32, vec!["missing".into()]);
+
+        let order = build_tag_order(&fields, &dict, Some(&annotations));
+        assert!(order.starts_with(&[8, 9, 35, 49, 56, 34, 52]));
+        assert!(order.contains(&55));
+        assert!(order.contains(&99));
+        assert!(order.contains(&77));
+        assert_eq!(order.last(), Some(&10));
+    }
+
+    #[test]
+    fn trim_line_endings_strips_crlf() {
+        let mut line = "abc\r\n".to_string();
+        trim_line_endings(&mut line);
+        assert_eq!(line, "abc");
+    }
+
+    #[test]
+    fn read_line_with_follow_returns_zero_on_eof() {
+        let mut reader = Cursor::new("");
+        let mut buf = String::new();
+        let n = read_line_with_follow(&mut reader, &mut buf, true, interrupt_flag()).unwrap();
+        assert_eq!(n, 0);
     }
 
     #[test]
