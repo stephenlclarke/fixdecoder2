@@ -154,6 +154,15 @@ jobs:
             echo "Python is required to compute the lockfile hash." >&2
             exit 1
           fi
+      - name: Cache Rust toolchain and cargo bin
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo/bin
+          key: rust-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}
+          restore-keys: |
+            rust-${{ runner.os }}-
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -176,6 +185,14 @@ jobs:
       - name: Ensure make is installed (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y make
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
       - name: Run scan and coverage (includes audit conversion)
         run: make scan coverage
       - name: Upload coverage artifact
@@ -233,10 +250,9 @@ jobs:
           name: sonar-generic-issues
           path: target/coverage
       - name: Install Rust (for Clippy sensor)
-        env:
-          CARGO_HOME: /github/home/.cargo
-          RUSTUP_HOME: /github/home/.rustup
         run: |
+          CARGO_HOME="${HOME}/.cargo"
+          RUSTUP_HOME="${HOME}/.rustup"
           mkdir -p "$CARGO_HOME" "$RUSTUP_HOME"
           echo "$CARGO_HOME/bin" >> "$GITHUB_PATH"
           apt-get update && apt-get install -y curl ca-certificates build-essential
@@ -292,7 +308,7 @@ jobs:
             esac
           done
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ steps.version.outputs.version }}
           name: Version ${{ steps.version.outputs.version }}
