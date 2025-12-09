@@ -121,6 +121,44 @@ fn run() -> Result<i32> {
     install_interrupt_handler()?;
     println!("{}", version_string());
 
+    let Some(opts) = parse_cli_options()? else {
+        return Ok(0);
+    };
+
+    let (custom_dicts, schema) = prepare_schema(&opts)?;
+
+    if run_handlers(&opts, &schema, &custom_dicts)? {
+        return Ok(0);
+    }
+
+    apply_colour_preferences(&opts);
+
+    let obfuscator = fix::create_obfuscator(opts.secret);
+    let files = resolve_input_files(&opts);
+
+    let mut summary = opts.summary.then(|| OrderSummary::new(opts.delimiter));
+    let fix_override = opts
+        .fix_from_user
+        .then(|| normalise_fix_key(&opts.fix_version))
+        .flatten();
+    let mut stdout = io::stdout();
+    let mut stderr = io::stderr();
+    let mut ctx = build_context(
+        &obfuscator,
+        &mut summary,
+        fix_override.as_deref(),
+        &opts,
+        &mut stdout,
+        &mut stderr,
+    );
+    let code = prettify_files(&files, &mut ctx);
+
+    warn_on_override_fallback(ctx.err_out);
+
+    Ok(final_exit_code(code))
+}
+
+fn parse_cli_options() -> Result<Option<CliOptions>> {
     let cmd = build_cli();
     let matches = match cmd.try_get_matches() {
         Ok(m) => m,
@@ -130,26 +168,28 @@ fn run() -> Result<i32> {
                 if err.kind() == ErrorKind::DisplayHelp {
                     print_usage();
                 }
-                return Ok(0);
+                return Ok(None);
             }
             _ => err.exit(),
         },
     };
 
     let opts = CliOptions::from_matches(&matches)?;
-
     if opts.show_version {
-        return Ok(0);
+        return Ok(None);
     }
 
+    Ok(Some(opts))
+}
+
+fn prepare_schema(opts: &CliOptions) -> Result<(HashMap<String, CustomDictionary>, SchemaTree)> {
     let custom_dicts = load_custom_dictionaries(&opts.xml_paths)?;
-    ensure_valid_fix_version(&opts, &custom_dicts)?;
-    let schema = load_schema(&opts, &custom_dicts)?;
+    ensure_valid_fix_version(opts, &custom_dicts)?;
+    let schema = load_schema(opts, &custom_dicts)?;
+    Ok((custom_dicts, schema))
+}
 
-    if run_handlers(&opts, &schema, &custom_dicts)? {
-        return Ok(0);
-    }
-
+fn apply_colour_preferences(opts: &CliOptions) {
     if let Some(force_colour) = opts.colour {
         if !force_colour {
             disable_output_colours();
@@ -157,49 +197,54 @@ fn run() -> Result<i32> {
     } else if !atty::is(Stream::Stdout) {
         disable_output_colours();
     }
+}
 
-    let obfuscator = fix::create_obfuscator(opts.secret);
-    let files = if opts.files.is_empty() {
+fn resolve_input_files(opts: &CliOptions) -> Vec<String> {
+    if opts.files.is_empty() {
         vec!["-".to_string()]
     } else {
         opts.files.clone()
-    };
+    }
+}
 
-    let mut summary = opts.summary.then(|| OrderSummary::new(opts.delimiter));
-    let fix_override = opts
-        .fix_from_user
-        .then(|| normalise_fix_key(&opts.fix_version))
-        .flatten();
-    let mut stdout = io::stdout();
-    let mut stderr = io::stderr();
-    let mut ctx = PrettifyContext {
-        out: &mut stdout,
-        err_out: &mut stderr,
-        obfuscator: &obfuscator,
+fn build_context<'a>(
+    obfuscator: &'a fix::Obfuscator,
+    summary: &'a mut Option<OrderSummary>,
+    fix_override: Option<&'a str>,
+    opts: &'a CliOptions,
+    out: &'a mut dyn Write,
+    err_out: &'a mut dyn Write,
+) -> PrettifyContext<'a> {
+    PrettifyContext {
+        out,
+        err_out,
+        obfuscator,
         display_delimiter: opts.delimiter,
-        summary: &mut summary,
-        fix_override: fix_override.as_deref(),
+        summary,
+        fix_override,
         follow: opts.follow,
         live_status_enabled: atty::is(Stream::Stdout),
         validation_enabled: opts.validate,
         message_counts: std::collections::HashMap::new(),
         counts_dirty: false,
         interrupted: decoder::prettifier::interrupt_flag(),
-    };
-    let code = prettify_files(&files, &mut ctx);
+    }
+}
 
+fn warn_on_override_fallback(err_out: &mut dyn Write) {
     if tag_lookup::override_warn_triggered() {
         let colours = colours::palette();
-        writeln!(
-            stderr,
+        let _ = writeln!(
+            err_out,
             "{}Notice:{} FIX override not found; decoded using detected dictionary",
             colours.error, colours.reset
-        )
-        .ok();
+        );
     }
+}
 
+fn final_exit_code(code: i32) -> i32 {
     let interrupted = decoder::prettifier::interrupt_flag().load(Ordering::Relaxed);
-    Ok(if interrupted { 130 } else { code })
+    if interrupted { 130 } else { code }
 }
 
 /// Construct the `clap` command with all supported arguments.  Options are
@@ -948,6 +993,33 @@ mod tests {
         let first = version_str() as *const str;
         let second = version_str() as *const str;
         assert_eq!(first, second, "cached version string should be stable");
+    }
+
+    #[test]
+    fn resolve_input_files_defaults_to_stdin() {
+        let opts = CliOptions {
+            files: Vec::new(),
+            ..dummy_opts("44")
+        };
+        let files = resolve_input_files(&opts);
+        assert_eq!(files, vec!["-".to_string()]);
+    }
+
+    #[test]
+    fn resolve_input_files_preserves_inputs() {
+        let opts = CliOptions {
+            files: vec!["one".into(), "two".into()],
+            ..dummy_opts("44")
+        };
+        let files = resolve_input_files(&opts);
+        assert_eq!(files, vec!["one".to_string(), "two".to_string()]);
+    }
+
+    #[test]
+    fn final_exit_code_marks_interrupt() {
+        decoder::prettifier::interrupt_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+        assert_eq!(130, final_exit_code(0));
+        decoder::prettifier::interrupt_flag().store(false, std::sync::atomic::Ordering::Relaxed);
     }
 
     #[test]

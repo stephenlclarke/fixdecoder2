@@ -103,12 +103,46 @@ impl LayoutStats {
     }
 }
 
-fn terminal_width() -> usize {
+pub(crate) fn terminal_width() -> usize {
     if let Some((Width(w), _)) = terminal_size() {
         w as usize
     } else {
         80
     }
+}
+
+pub(crate) fn visible_width(text: &str) -> usize {
+    let mut width = 0;
+    let mut in_esc = false;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if in_esc {
+            if b == b'm' {
+                in_esc = false;
+            }
+            i += 1;
+            continue;
+        }
+        if b == 0x1b {
+            in_esc = true;
+            i += 1;
+            continue;
+        }
+        width += 1;
+        i += 1;
+    }
+    width
+}
+
+pub(crate) fn pad_ansi(text: &str, width: usize) -> String {
+    let visible = visible_width(text);
+    if visible >= width {
+        return text.to_string();
+    }
+    let pad = width - visible;
+    format!("{text}{}", " ".repeat(pad))
 }
 
 /// Tiny helper that implements `Display` for indentation without building
@@ -147,6 +181,25 @@ fn format_required(required: bool, colours: ColourPalette) -> String {
         format!(" - ({}Y{})", colours.title, colours.reset)
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visible_width_ignores_ansi_sequences() {
+        let coloured = "\u{1b}[31mred\u{1b}[0m";
+        assert_eq!(visible_width(coloured), 3);
+    }
+
+    #[test]
+    fn pad_ansi_extends_to_requested_width() {
+        let coloured = "\u{1b}[32mok\u{1b}[0m";
+        let padded = pad_ansi(coloured, 5);
+        assert_eq!(visible_width(&padded), 5);
+        assert!(padded.ends_with("   "));
     }
 }
 
