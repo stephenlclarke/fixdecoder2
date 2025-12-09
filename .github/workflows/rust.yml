@@ -227,6 +227,11 @@ jobs:
         with:
           name: coverage-xml
           path: target/coverage
+      - name: Download sonar issues artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: sonar-generic-issues
+          path: target/coverage
       - name: Install Rust (for Clippy sensor)
         run: |
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
