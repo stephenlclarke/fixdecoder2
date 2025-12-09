@@ -11,7 +11,7 @@ on:
       - "v*"
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   dictionaries:
@@ -104,23 +104,23 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-${{ matrix.target }}-cargo-
             ${{ runner.os }}-cargo-
-      - name: Ensure make is installed (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y make
-      - name: Ensure make is installed (Windows)
-        if: runner.os == 'Windows'
-        run: choco install make
       - name: Install target dependencies
         if: ${{ matrix.setup != '' }}
         run: ${{ matrix.setup }}
+      - name: Prepare build inputs
+        shell: bash
+        run: |
+          source ci/ci_helper.sh
+          ensure_build_metadata
+          cargo run --quiet --bin generate_sensitive_tags >/dev/null
       - name: Build release
         shell: bash
         run: |
           if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
             export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
           fi
-          make prepare
-          cargo build --release --target ${{ matrix.target }}
+          cargo fmt --all
+          cargo build --release --locked --target ${{ matrix.target }}
         env:
           RUSTFLAGS: ""
       - name: Stage artifact
@@ -273,13 +273,26 @@ jobs:
     runs-on: ubuntu-latest
     needs: [build-matrix]
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Extract version
+      - name: Determine release version from tag
         id: version
         run: |
-          version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          ref="${GITHUB_REF_NAME}"
+          if [[ ! "${ref}" =~ ^v[0-9] ]]; then
+            echo "Expected tag name to start with v; got ${ref}" >&2
+            exit 1
+          fi
+          tag_version="${ref#v}"
+          cargo_version=$(grep -m1 '^version' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          if [[ "${cargo_version}" != "${tag_version}" ]]; then
+            echo "Tag version (${tag_version}) does not match Cargo.toml (${cargo_version})" >&2
+            exit 1
+          fi
+          echo "version=${tag_version}" >> "${GITHUB_OUTPUT}"
+          echo "tag_name=${ref}" >> "${GITHUB_OUTPUT}"
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
@@ -307,6 +320,6 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
+          tag_name: ${{ steps.version.outputs.tag_name }}
           name: Version ${{ steps.version.outputs.version }}
           files: dist/*
