@@ -128,11 +128,14 @@ jobs:
           toolchain="stable"
           if [ -f rust-toolchain.toml ]; then
             parsed=$(grep -m1 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
-            toolchain=${parsed:-$toolchain}
-          elif [ -f rust-toolchain ]; then
-            toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
-          fi
-          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+          toolchain=${parsed:-$toolchain}
+        elif [ -f rust-toolchain ]; then
+          toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
+        fi
+        echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+      - name: Ensure cache directories exist
+        run: |
+          mkdir -p "$HOME/.cargo/bin" "$HOME/.rustup"
       - name: Compute lockfile hash
         id: lockfile-hash
         run: echo "hash=$(sha256sum Cargo.lock | cut -d ' ' -f1)" >> "$GITHUB_OUTPUT"
