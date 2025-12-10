@@ -1,3 +1,5 @@
+---
+# yamllint disable rule:truthy rule:line-length
 # CI pipeline for PRs (lint, test, coverage, sonar) and tag release builds.
 name: CI Pipeline
 
@@ -36,6 +38,11 @@ jobs:
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
+      - name: Lint workflow YAML
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install yamllint
+          yamllint .github/workflows
       - name: Compute lockfile hash
         id: lockfile-hash
         shell: bash
@@ -128,11 +135,11 @@ jobs:
           toolchain="stable"
           if [ -f rust-toolchain.toml ]; then
             parsed=$(grep -m1 'channel' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          toolchain=${parsed:-$toolchain}
-        elif [ -f rust-toolchain ]; then
-          toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
-        fi
-        echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
+            toolchain=${parsed:-$toolchain}
+          elif [ -f rust-toolchain ]; then
+            toolchain=$(head -n1 rust-toolchain | tr -d '[:space:]')
+          fi
+          echo "toolchain=$toolchain" >> "$GITHUB_OUTPUT"
       - name: Ensure cache directories exist
         run: |
           mkdir -p "$HOME/.cargo/bin" "$HOME/.rustup"

@@ -24,6 +24,11 @@ scan: prepare
 		ensure_build_metadata && \
 		cargo fmt --all --check && \
 		cargo clippy --workspace --all-targets -- -D warnings && \
+		if command -v yamllint >/dev/null 2>&1; then \
+			yamllint .github/workflows || true; \
+		else \
+			echo "yamllint not installed; skipping YAML lint"; \
+		fi; \
 		mkdir -p target/coverage && \
 		if command -v cargo-audit >/dev/null 2>&1; then \
 			echo "Running cargo-audit (text output)"; \
