@@ -32,9 +32,9 @@ scan: prepare
 		mkdir -p target/coverage && \
 		if command -v cargo-audit >/dev/null 2>&1; then \
 			echo "Running cargo-audit (text output)"; \
-			cargo audit || true; \
+			cargo audit --no-fetch || true; \
 			echo "Running cargo-audit (JSON) → target/coverage/rustsec.json"; \
-			cargo audit --json > target/coverage/rustsec.json || true; \
+			cargo audit --no-fetch --json > target/coverage/rustsec.json || true; \
 			echo "Converting RustSec report to Sonar generic issues (target/coverage/sonar-generic-issues.json)"; \
 			python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json || true; \
 		else \
@@ -48,7 +48,10 @@ coverage: build
 		ensure_build_metadata && \
 		mkdir -p target/coverage && \
 		cargo llvm-cov clean --workspace >/dev/null 2>&1 || true; \
-		cargo llvm-cov --workspace --cobertura \
+		cargo llvm-cov \
+		  --package fixdecoder \
+		  --package pcap2fix \
+		  --cobertura \
 		  --ignore-filename-regex "src/fix/sensitive.rs|src/bin/generate_sensitive_tags.rs" \
 		  --output-path target/coverage/coverage.xml \
 	'

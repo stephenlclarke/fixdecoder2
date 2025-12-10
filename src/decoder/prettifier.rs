@@ -148,6 +148,14 @@ impl<'a> GroupRenderer<'a> {
             if self.fields[idx].tag != spec.delim {
                 if self.msg_def.group_membership.get(&self.fields[idx].tag) == Some(&spec.count_tag)
                 {
+                    if entries == 0 {
+                        let entry_consumed =
+                            self.render_group_entry(output, idx, spec, indent_spaces, entries + 1);
+                        idx += entry_consumed;
+                        entries += 1;
+                        consumed = idx - start_idx;
+                        continue;
+                    }
                     self.write_field(
                         output,
                         &self.fields[idx],
@@ -203,7 +211,7 @@ impl<'a> GroupRenderer<'a> {
         let dash_start_col = indent_spaces + NAME_TEXT_OFFSET;
         let label_indent = dash_start_col.saturating_sub(entry_label.len());
         output.push_str(&format!(
-            "{}{}{}{}{}\n",
+            "{}{} {}{}{}\n",
             indent(label_indent),
             entry_label,
             self.colours.error,
@@ -1051,8 +1059,9 @@ mod tests {
         let paren_col = count_line.find('(').expect("open paren present");
         let dash_col = group_line.find('-').expect("dashes present");
         assert_eq!(
-            dash_col, paren_col,
-            "group separator should align under '('"
+            dash_col,
+            paren_col + 1,
+            "group separator should start one space after '(' anchor"
         );
     }
 
