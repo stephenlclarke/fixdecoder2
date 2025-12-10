@@ -52,7 +52,7 @@ The utility behaves like the `cat` utility in `Linux`, except as it reads the in
 
 <!-- USAGE:START -->
 ```bash
-fixdecoder v0.2.1 (branch:develop, commit:91a3038) [rust:1.91.1]
+fixdecoder v0.2.1 (branch:develop, commit:02b044e) [rust:1.91.1]
 FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier
 
 Usage: fixdecoder [OPTIONS] [FILE]...
@@ -165,7 +165,7 @@ to see what versions are available for the computer you want to run it on.
 
 ## Build it
 
-Build it from source. This now requires `bash` version 5+ and a recent `Rust` toolchain (the project is tested with Rust 1.78+).
+Build it from source. This now requires `bash` version 5+ and a recent `Rust` toolchain (the project is tested with Rust 1.91+).
 
 ```bash
 ❯ bash --version
