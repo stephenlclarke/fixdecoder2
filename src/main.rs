@@ -14,7 +14,6 @@ mod fix;
 
 use crate::decoder::colours;
 use anyhow::{Context, Result, anyhow};
-use atty::Stream;
 use clap::error::ErrorKind;
 use clap::parser::ValueSource;
 use clap::{Arg, ArgAction, ArgMatches, Command};
@@ -27,6 +26,7 @@ use decoder::{
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::io::IsTerminal;
 use std::io::Write;
 use std::process;
 use std::sync::OnceLock;
@@ -194,7 +194,7 @@ fn apply_colour_preferences(opts: &CliOptions) {
         if !force_colour {
             disable_output_colours();
         }
-    } else if !atty::is(Stream::Stdout) {
+    } else if !std::io::stdout().is_terminal() {
         disable_output_colours();
     }
 }
@@ -223,7 +223,7 @@ fn build_context<'a>(
         summary,
         fix_override,
         follow: opts.follow,
-        live_status_enabled: atty::is(Stream::Stdout),
+        live_status_enabled: std::io::stdout().is_terminal(),
         validation_enabled: opts.validate,
         message_counts: std::collections::HashMap::new(),
         counts_dirty: false,
