@@ -1465,6 +1465,34 @@ mod tests {
     }
 
     #[test]
+    fn preferred_settlement_date_prefers_primary_then_secondary() {
+        assert_eq!(
+            preferred_settl_date(Some("20250101"), Some("20250102")),
+            Some("20250102")
+        );
+        assert_eq!(
+            preferred_settl_date(None, Some("20250102")),
+            Some("20250102")
+        );
+        assert_eq!(preferred_settl_date(None, None), None);
+    }
+
+    #[test]
+    fn extract_date_part_handles_timestamp() {
+        assert_eq!(
+            extract_date_part("20250101-12:00:01.000"),
+            Some("20250101".into())
+        );
+        assert_eq!(extract_date_part(""), None);
+    }
+
+    #[test]
+    fn date_diff_days_returns_none_when_incomplete() {
+        assert_eq!(date_diff_days(None, Some("20250101")), None);
+        assert_eq!(date_diff_days(Some("20250101"), None), None);
+    }
+
+    #[test]
     fn state_path_deduplicates_consecutive_states() {
         let mut record = OrderRecord::new("KEY".into());
         record.events.push(OrderEvent {

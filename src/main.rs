@@ -1110,4 +1110,55 @@ mod tests {
         let delim = parse_delimiter(Some(&",".to_string())).unwrap();
         assert_eq!(delim, ',');
     }
+
+    #[test]
+    fn normalise_fix_key_handles_variants() {
+        assert_eq!(normalise_fix_key("4.4"), Some("FIX44".into()));
+        assert_eq!(normalise_fix_key("fixt1.1"), Some("FIXT11".into()));
+        assert!(normalise_fix_key("   ").is_none());
+    }
+
+    #[test]
+    fn dictionary_key_includes_service_pack() {
+        let dict = FixDictionary {
+            typ: "FIX".into(),
+            major: "5".into(),
+            minor: "0".into(),
+            service_pack: Some("2".into()),
+            fields: Default::default(),
+            messages: Default::default(),
+            components: Default::default(),
+            header: Default::default(),
+            trailer: Default::default(),
+        };
+        assert_eq!(dictionary_key(&dict), "FIX50SP2");
+    }
+
+    #[test]
+    fn dictionary_source_prefers_custom_entry() {
+        let mut custom = HashMap::new();
+        custom.insert(
+            "FIX44".into(),
+            CustomDictionary {
+                path: "/tmp/custom44.xml".into(),
+                dict: FixDictionary {
+                    typ: "FIX".into(),
+                    major: "4".into(),
+                    minor: "4".into(),
+                    service_pack: None,
+                    fields: Default::default(),
+                    messages: Default::default(),
+                    components: Default::default(),
+                    header: Default::default(),
+                    trailer: Default::default(),
+                },
+            },
+        );
+
+        assert_eq!(dictionary_source(&custom, "fix44"), "/tmp/custom44.xml");
+        assert_eq!(dictionary_source(&HashMap::new(), "FIX44"), "built-in");
+        let all = all_dictionary_keys(&custom);
+        assert!(all.contains(&"FIX44".into()));
+        assert!(all.contains(&"FIX27".into()));
+    }
 }

@@ -18,7 +18,7 @@ use terminal_size::{Width, terminal_size};
 
 /// Captures how many columns we can render enums in and how wide each column
 /// needs to be for tidy terminal output.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) struct ColumnLayout {
     column_width: usize,
     columns: usize,
@@ -258,6 +258,96 @@ mod tests {
         }
     }
 
+    fn schema_with_structures() -> SchemaTree {
+        use std::collections::BTreeMap;
+        use std::sync::Arc;
+
+        let msg_type_field = Arc::new(Field {
+            name: "MsgType".into(),
+            number: 35,
+            field_type: "STRING".into(),
+            values: vec![
+                sample_value("D", "NewOrderSingle"),
+                sample_value("8", "ExecutionReport"),
+            ],
+            values_wrapper: ValuesWrapper::default(),
+        });
+
+        let aux_field = sample_field_node(false);
+        let group_field = sample_field_node(true);
+
+        let component = ComponentNode {
+            name: "Block".into(),
+            fields: vec![aux_field.clone()],
+            groups: vec![GroupNode {
+                name: "Nested".into(),
+                required: false,
+                fields: vec![group_field.clone()],
+                components: Vec::new(),
+                groups: Vec::new(),
+            }],
+            components: Vec::new(),
+        };
+
+        let header = ComponentNode {
+            name: "Header".into(),
+            fields: vec![FieldNode {
+                required: true,
+                field: msg_type_field.clone(),
+            }],
+            groups: Vec::new(),
+            components: Vec::new(),
+        };
+
+        let trailer = ComponentNode {
+            name: "Trailer".into(),
+            fields: vec![aux_field.clone()],
+            groups: Vec::new(),
+            components: Vec::new(),
+        };
+
+        let message = MessageNode {
+            name: "NewOrder".into(),
+            msg_type: "D".into(),
+            msg_cat: "app".into(),
+            fields: vec![
+                FieldNode {
+                    required: true,
+                    field: msg_type_field.clone(),
+                },
+                aux_field.clone(),
+            ],
+            components: vec![component.clone()],
+            groups: vec![GroupNode {
+                name: "Allocs".into(),
+                required: true,
+                fields: vec![group_field],
+                components: vec![component.clone()],
+                groups: Vec::new(),
+            }],
+        };
+
+        let mut fields = BTreeMap::new();
+        fields.insert(msg_type_field.name.clone(), msg_type_field.clone());
+        fields.insert(aux_field.field.name.clone(), aux_field.field.clone());
+
+        let mut components = BTreeMap::new();
+        components.insert(header.name.clone(), header);
+        components.insert(trailer.name.clone(), trailer);
+        components.insert(component.name.clone(), component);
+
+        let mut messages = BTreeMap::new();
+        messages.insert(message.name.clone(), message);
+
+        SchemaTree {
+            fields,
+            components,
+            messages,
+            version: "FIX 4.4".into(),
+            service_pack: "-".into(),
+        }
+    }
+
     #[test]
     fn print_field_renders_required_indicator() {
         let node = sample_field_node(true);
@@ -304,6 +394,62 @@ mod tests {
         let refs: Vec<&Value> = values.iter().collect();
         let layout = compute_values_layout(&refs, 4).expect("layout expected");
         assert!(layout.column_width >= "LONG: desc".len());
+        assert!(layout.columns >= 1);
+    }
+
+    #[test]
+    fn render_message_includes_header_and_trailer() {
+        let schema = schema_with_structures();
+        let msg = schema.messages.get("NewOrder").unwrap();
+        let mut out = Vec::new();
+        let style = DisplayStyle::new(palette(), true);
+        let mut ctx = RenderContext::new(&mut out, &schema, style, true);
+        ctx.render_message(msg, true, true, 0).unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("Component:"));
+        assert!(s.contains("Header"));
+        assert!(s.contains("Message: "));
+        assert!(s.contains("Body"));
+        assert!(s.contains("Group:"));
+        assert!(s.contains("Allocs"));
+        assert!(s.contains("Trailer"));
+    }
+
+    #[test]
+    fn render_component_prints_matching_msg_type_enum_only() {
+        let schema = schema_with_structures();
+        let msg = schema.messages.get("NewOrder").unwrap();
+        let header = schema.components.get("Header").unwrap();
+        let mut out = Vec::new();
+        let mut ctx =
+            RenderContext::new(&mut out, &schema, DisplayStyle::new(palette(), false), true);
+        ctx.render_component_with_style(Some(msg), header, 0, DisplayStyle::new(palette(), false))
+            .unwrap();
+        let s = String::from_utf8(out).unwrap();
+        assert!(s.contains("NewOrderSingle"));
+        assert!(!s.contains("ExecutionReport"));
+    }
+
+    #[test]
+    fn cached_layout_is_reused_for_component() {
+        let schema = schema_with_structures();
+        let component = schema.components.get("Block").unwrap();
+        let mut out = Vec::new();
+        let mut ctx =
+            RenderContext::new(&mut out, &schema, DisplayStyle::new(palette(), true), true);
+        let first = ctx.cached_component_layout(component, 2);
+        let second = ctx.cached_component_layout(component, 2);
+        assert_eq!(first, second);
+        assert_eq!(ctx.layout_cache.len(), 1);
+    }
+
+    #[test]
+    fn compute_message_layout_counts_header_and_trailer() {
+        let schema = schema_with_structures();
+        let msg = schema.messages.get("NewOrder").unwrap();
+        let layout =
+            compute_message_layout(&schema, msg, true, true, 0).expect("layout should be computed");
+        assert!(layout.column_width > 0);
         assert!(layout.columns >= 1);
     }
 
