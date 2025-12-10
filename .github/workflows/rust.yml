@@ -9,6 +9,11 @@ on:
       - develop
     tags:
       - "v*"
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
 
 permissions:
   contents: read
@@ -150,8 +155,8 @@ jobs:
     name: Lint & Coverage
     runs-on: ubuntu-latest
     needs: dictionaries
-    # Run on branch pushes for fast feedback (debug build + coverage); skip tags.
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    # Run on branch pushes and PRs for fast feedback (debug build + coverage); skip tags.
+    if: (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
       - name: Compute lockfile hash
@@ -233,12 +238,72 @@ jobs:
           path: target/clippy.json
           if-no-files-found: warn
 
+  pr-check:
+    name: PR Build & Test (slim)
+    runs-on: ubuntu-latest
+    needs: dictionaries
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute lockfile hash
+        id: lockfile-hash
+        shell: bash
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ci/compute_lockfile_hash.py Cargo.lock
+          elif command -v python >/dev/null 2>&1; then
+            python ci/compute_lockfile_hash.py Cargo.lock
+          else
+            echo "Python is required to compute the lockfile hash." >&2
+            exit 1
+          fi
+      - name: Cache Rust toolchain and cargo bin
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.rustup
+            ~/.cargo/bin
+          key: prcheck-rust-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}
+          restore-keys: |
+            prcheck-rust-${{ runner.os }}-
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - name: Download FIX specs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fix-specs
+          path: resources
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: prcheck-${{ runner.os }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
+          restore-keys: |
+            prcheck-${{ runner.os }}-cargo-
+      - name: Prepare build inputs
+        shell: bash
+        run: |
+          source ci/ci_helper.sh
+          ensure_build_metadata
+          cargo run --quiet --bin generate_sensitive_tags >/dev/null
+      - name: Format check
+        run: cargo fmt --all --check
+      - name: Clippy (warnings only)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Cargo test (workspace)
+        run: cargo test --workspace --locked --all-targets -- --nocapture
+
   sonar:
     name: Sonar (coverage import)
     runs-on: ubuntu-latest
     needs: [quality]
-    # Run for branch pushes (not tags) when a token is available.
-    if: github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')
+    # Run for branch pushes and PRs (not tags) when a token is available.
+    if: ((github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/')) || github.event_name == 'pull_request')
     steps:
       - uses: actions/checkout@v4
       - name: Determine toolchain channel
@@ -299,11 +364,19 @@ jobs:
             echo "[]" > target/clippy.json
           fi
           CLIPPY_REPORT="$(pwd)/target/clippy.json"
+          PR_OPTS=()
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            PR_OPTS+=("-Dsonar.pullrequest.key=${{ github.event.pull_request.number }}")
+            PR_OPTS+=("-Dsonar.pullrequest.branch=${{ github.event.pull_request.head.ref }}")
+            PR_OPTS+=("-Dsonar.pullrequest.base=${{ github.event.pull_request.base.ref }}")
+            PR_OPTS+=("-Dsonar.pullrequest.provider=github")
+          fi
           sonar-scanner \
             -Dsonar.host.url=https://sonarcloud.io \
             -Dsonar.externalIssuesReportPaths=target/coverage/sonar-generic-issues.json \
             -Dsonar.rust.clippy.reportPaths="${CLIPPY_REPORT}" \
-            -Dsonar.rust.clippy.enabled=false
+            -Dsonar.rust.clippy.enabled=false \
+            "${PR_OPTS[@]}"
 
   release:
     name: Publish Release
