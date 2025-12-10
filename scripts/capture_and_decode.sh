@@ -27,8 +27,27 @@ FIXDECODER_ARGS=("$@")
 
 REMOTE_CMD="sudo tcpdump -U -n -s0 -i any -w - \"(host ${TCP_HOST} and port ${PORT}) and tcp[((tcp[12] & 0xf0) >> 2):4] = 0x383d4649 and tcp[((tcp[12] & 0xf0) >> 2) + 4] = 0x58\""
 
-PCAP2FIX_BIN="${PCAP2FIX_BIN:-./target/release/pcap2fix}"
-FIXDECODER_BIN="${FIXDECODER_BIN:-./target/release/fixdecoder}"
+# Resolve binaries: prefer explicit env override, then PATH, then local release build.
+resolve_bin() {
+  local env_path="$1"
+  local name="$2"
+  local local_fallback="$3"
+
+  if [[ -n "${env_path}" ]]; then
+    echo "${env_path}"
+    return
+  fi
+
+  if command -v "${name}" >/dev/null 2>&1; then
+    command -v "${name}"
+    return
+  fi
+
+  echo "${local_fallback}"
+}
+
+PCAP2FIX_BIN="$(resolve_bin "${PCAP2FIX_BIN:-}" pcap2fix ./target/release/pcap2fix)"
+FIXDECODER_BIN="$(resolve_bin "${FIXDECODER_BIN:-}" fixdecoder ./target/release/fixdecoder)"
 
 if [[ ! -x "${PCAP2FIX_BIN}" || ! -x "${FIXDECODER_BIN}" ]]; then
   echo "error: expected binaries at ${PCAP2FIX_BIN} and ${FIXDECODER_BIN}. Build them first (cargo build --release)." >&2
