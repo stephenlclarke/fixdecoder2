@@ -1,4 +1,4 @@
-# CI pipeline for the Rust implementation
+# CI pipeline for PRs (lint, test, coverage, sonar) and tag release builds.
 name: CI Pipeline
 
 on:
@@ -18,7 +18,6 @@ jobs:
   dictionaries:
     name: Prepare FIX specs
     runs-on: ubuntu-latest
-    # Specs are needed for all flows.
     steps:
       - uses: actions/checkout@v4
       - name: Download FIX XML dictionaries
@@ -30,128 +29,10 @@ jobs:
           name: fix-specs
           path: resources
 
-  build-matrix:
-    name: Build release (tags only)
-    strategy:
-      fail-fast: true
-      matrix:
-        include:
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            artifact_path: target/aarch64-apple-darwin/release/fixdecoder
-            asset_suffix: darwin-arm64
-            ext: ""
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-            artifact_path: target/x86_64-apple-darwin/release/fixdecoder
-            asset_suffix: darwin-x86_64
-            ext: ""
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            artifact_path: target/x86_64-pc-windows-msvc/release/fixdecoder.exe
-            asset_suffix: windows-x86_64
-            ext: ".exe"
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            artifact_path: target/x86_64-unknown-linux-gnu/release/fixdecoder
-            asset_suffix: linux-gnu-x86_64
-            ext: ""
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-            setup: sudo apt-get update && sudo apt-get install -y musl-tools
-            artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
-            asset_suffix: linux-musl-x86_64
-            ext: ""
-    runs-on: ${{ matrix.os }}
-    needs: [dictionaries]
-    # Only build release artifacts when tagging; skips lint/coverage.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
-    env:
-      FIXDECODER_BRANCH: ${{ github.ref_name }}
-      FIXDECODER_COMMIT: ${{ github.sha }}
-      FIXDECODER_GIT_URL: https://github.com/${{ github.repository }}
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compute lockfile hash
-        id: lockfile-hash
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then
-            python3 ci/compute_lockfile_hash.py Cargo.lock
-          elif command -v python >/dev/null 2>&1; then
-            python ci/compute_lockfile_hash.py Cargo.lock
-          else
-            echo "Python is required to compute the lockfile hash." >&2
-            exit 1
-          fi
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt,llvm-tools-preview
-          targets: ${{ matrix.target }}
-      - name: Download FIX specs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: fix-specs
-          path: resources
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
-          restore-keys: |
-            ${{ runner.os }}-${{ matrix.target }}-cargo-
-            ${{ runner.os }}-cargo-
-      - name: Install target dependencies
-        if: ${{ matrix.setup != '' }}
-        run: ${{ matrix.setup }}
-      - name: Prepare build inputs
-        shell: bash
-        run: |
-          source ci/ci_helper.sh
-          ensure_build_metadata
-          cargo run --quiet --bin generate_sensitive_tags >/dev/null
-      - name: Build release
-        shell: bash
-        run: |
-          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
-            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
-          fi
-          cargo fmt --all
-          cargo build --release --locked --workspace --target ${{ matrix.target }}
-        env:
-          RUSTFLAGS: ""
-      - name: Stage artifact
-        shell: bash
-        run: |
-          mkdir -p dist
-          cp "${{ matrix.artifact_path }}" "dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}"
-          pcap_path="target/${{ matrix.target }}/release/pcap2fix${{ matrix.ext }}"
-          if [ -f "$pcap_path" ]; then
-            cp "$pcap_path" "dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}"
-          else
-            echo "pcap2fix binary not found at $pcap_path" >&2
-            exit 1
-          fi
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: fixdecoder-${{ matrix.asset_suffix }}
-          path: dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}
-      - name: Upload pcap2fix artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: pcap2fix-${{ matrix.asset_suffix }}
-          path: dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}
-
   quality:
     name: Lint & Coverage
     runs-on: ubuntu-latest
     needs: dictionaries
-    # Run on branch pushes and PRs for fast feedback (debug build + coverage); skip tags.
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -234,71 +115,10 @@ jobs:
           path: target/clippy.json
           if-no-files-found: warn
 
-  pr-check:
-    name: PR Build & Test (slim)
-    runs-on: ubuntu-latest
-    needs: dictionaries
-    if: github.event_name == 'pull_request'
-    steps:
-      - uses: actions/checkout@v4
-      - name: Compute lockfile hash
-        id: lockfile-hash
-        shell: bash
-        run: |
-          if command -v python3 >/dev/null 2>&1; then
-            python3 ci/compute_lockfile_hash.py Cargo.lock
-          elif command -v python >/dev/null 2>&1; then
-            python ci/compute_lockfile_hash.py Cargo.lock
-          else
-            echo "Python is required to compute the lockfile hash." >&2
-            exit 1
-          fi
-      - name: Cache Rust toolchain and cargo bin
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.rustup
-            ~/.cargo/bin
-          key: prcheck-rust-${{ runner.os }}-${{ hashFiles('rust-toolchain*', 'Cargo.lock') }}
-          restore-keys: |
-            prcheck-rust-${{ runner.os }}-
-      - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy,rustfmt
-      - name: Download FIX specs artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: fix-specs
-          path: resources
-      - name: Cache cargo registry and target
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: prcheck-${{ runner.os }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
-          restore-keys: |
-            prcheck-${{ runner.os }}-cargo-
-      - name: Prepare build inputs
-        shell: bash
-        run: |
-          source ci/ci_helper.sh
-          ensure_build_metadata
-          cargo run --quiet --bin generate_sensitive_tags >/dev/null
-      - name: Format check
-        run: cargo fmt --all --check
-      - name: Clippy (warnings only)
-        run: cargo clippy --workspace --all-targets -- -D warnings
-      - name: Cargo test (workspace)
-        run: cargo test --workspace --locked --all-targets -- --nocapture
-
   sonar:
     name: Sonar (coverage import)
     runs-on: ubuntu-latest
     needs: [quality]
-    # Run for branch pushes and PRs (not tags) when a token is available.
     if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v4
@@ -373,6 +193,122 @@ jobs:
             -Dsonar.rust.clippy.reportPaths="${CLIPPY_REPORT}" \
             -Dsonar.rust.clippy.enabled=false \
             "${PR_OPTS[@]}"
+
+  build-matrix:
+    name: Build release (tags only)
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_path: target/aarch64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-arm64
+            ext: ""
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            artifact_path: target/x86_64-apple-darwin/release/fixdecoder
+            asset_suffix: darwin-x86_64
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_path: target/x86_64-pc-windows-msvc/release/fixdecoder.exe
+            asset_suffix: windows-x86_64
+            ext: ".exe"
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_path: target/x86_64-unknown-linux-gnu/release/fixdecoder
+            asset_suffix: linux-gnu-x86_64
+            ext: ""
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            setup: sudo apt-get update && sudo apt-get install -y musl-tools
+            artifact_path: target/x86_64-unknown-linux-musl/release/fixdecoder
+            asset_suffix: linux-musl-x86_64
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    needs: [dictionaries]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    env:
+      FIXDECODER_BRANCH: ${{ github.ref_name }}
+      FIXDECODER_COMMIT: ${{ github.sha }}
+      FIXDECODER_GIT_URL: https://github.com/${{ github.repository }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compute lockfile hash
+        id: lockfile-hash
+        shell: bash
+        run: |
+          if command -v python3 >/dev/null 2>&1; then
+            python3 ci/compute_lockfile_hash.py Cargo.lock
+          elif command -v python >/dev/null 2>&1; then
+            python ci/compute_lockfile_hash.py Cargo.lock
+          else
+            echo "Python is required to compute the lockfile hash." >&2
+            exit 1
+          fi
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt,llvm-tools-preview
+          targets: ${{ matrix.target }}
+      - name: Download FIX specs artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: fix-specs
+          path: resources
+      - name: Cache cargo registry and target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ steps.lockfile-hash.outputs.hash }}
+          restore-keys: |
+            ${{ runner.os }}-${{ matrix.target }}-cargo-
+            ${{ runner.os }}-cargo-
+      - name: Install target dependencies
+        if: ${{ matrix.setup != '' }}
+        run: ${{ matrix.setup }}
+      - name: Prepare build inputs
+        shell: bash
+        run: |
+          source ci/ci_helper.sh
+          ensure_build_metadata
+          cargo run --quiet --bin generate_sensitive_tags >/dev/null
+      - name: Build release
+        shell: bash
+        run: |
+          if [[ "${{ matrix.target }}" == "x86_64-unknown-linux-musl" ]]; then
+            export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
+          fi
+          cargo fmt --all
+          cargo build --release --locked --workspace --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: ""
+      - name: Stage artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.artifact_path }}" "dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}"
+          pcap_path="target/${{ matrix.target }}/release/pcap2fix${{ matrix.ext }}"
+          if [ -f "$pcap_path" ]; then
+            cp "$pcap_path" "dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}"
+          else
+            echo "pcap2fix binary not found at $pcap_path" >&2
+            exit 1
+          fi
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fixdecoder-${{ matrix.asset_suffix }}
+          path: dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}
+      - name: Upload pcap2fix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcap2fix-${{ matrix.asset_suffix }}
+          path: dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}
 
   release:
     name: Publish Release
