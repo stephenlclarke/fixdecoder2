@@ -4,6 +4,7 @@
 pub mod colours;
 pub mod display;
 pub mod fixparser;
+pub mod layout;
 pub mod prettifier;
 pub mod schema;
 pub mod summary;

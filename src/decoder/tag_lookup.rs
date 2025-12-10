@@ -14,6 +14,19 @@ pub struct MessageDef {
     pub _msg_type: String,
     pub field_order: Vec<u32>,
     pub required: Vec<u32>,
+    pub groups: HashMap<u32, GroupSpec>,
+    pub group_membership: HashMap<u32, u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct GroupSpec {
+    pub name: String,
+    pub count_tag: u32,
+    pub delim: u32,
+    pub entry_order: Vec<u32>,
+    pub entry_pos: HashMap<u32, usize>,
+    pub entry_tag_set: HashSet<u32>,
+    pub nested: HashMap<u32, GroupSpec>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -24,6 +37,7 @@ pub struct FixTagLookup {
     field_types: Arc<HashMap<u32, String>>,
     messages: Arc<HashMap<String, MessageDef>>,
     repeatable_tags: Arc<HashSet<u32>>,
+    #[allow(dead_code)]
     trailer_order: Arc<Vec<u32>>,
     fallback: Option<Arc<FixTagLookup>>,
     fallback_role: Option<FallbackKind>,
@@ -77,7 +91,7 @@ impl FixTagLookup {
         component_map.insert(trailer.name.clone(), trailer);
 
         let messages = build_message_defs(&dict.messages, &component_map, &name_to_tag);
-        let repeatable_tags = collect_repeatable_tags(&dict.messages, &component_map, &name_to_tag);
+        let repeatable_tags = collect_repeatable_from_specs(&messages);
         let mut trailer_order = Vec::new();
         let mut stack = Vec::new();
         append_component_fields(
@@ -325,10 +339,7 @@ pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> A
             if Arc::ptr_eq(&dict, &fallback) {
                 return dict;
             }
-            let mut merged = (*dict).clone();
-            merged.fallback = Some(fallback);
-            merged.fallback_role = Some(FallbackKind::DetectedOverride);
-            let merged = Arc::new(merged);
+            let merged = merge_with_fallback(&dict, fallback, FallbackKind::DetectedOverride);
             if let Ok(mut guard) = LOOKUPS.write() {
                 guard.insert(combo_key, merged.clone());
             }
@@ -345,6 +356,17 @@ pub fn load_dictionary_with_override(msg: &str, override_key: Option<&str>) -> A
 
 fn warn_override_miss() {
     OVERRIDE_MISS.store(true, Ordering::Relaxed);
+}
+
+fn merge_with_fallback(
+    primary: &Arc<FixTagLookup>,
+    fallback: Arc<FixTagLookup>,
+    role: FallbackKind,
+) -> Arc<FixTagLookup> {
+    let mut merged: FixTagLookup = (**primary).clone();
+    merged.fallback = Some(fallback);
+    merged.fallback_role = Some(role);
+    Arc::new(merged)
 }
 
 #[cfg(test)]
@@ -400,6 +422,7 @@ fn build_message_defs(
     let mut map = HashMap::new();
     for msg in &messages.items {
         let (field_order, required) = expand_message_fields(msg, components, name_to_tag, true);
+        let (groups, membership) = collect_group_specs(&msg.groups, components, name_to_tag);
         map.insert(
             msg.msg_type.clone(),
             MessageDef {
@@ -407,6 +430,8 @@ fn build_message_defs(
                 _msg_type: msg.msg_type.clone(),
                 field_order,
                 required,
+                groups,
+                group_membership: membership,
             },
         );
     }
@@ -536,44 +561,90 @@ fn dedupe(values: &mut Vec<u32>) {
     values.retain(|v| seen.insert(*v));
 }
 
-fn collect_repeatable_tags(
-    messages: &MessageContainer,
+fn collect_group_specs(
+    groups: &[GroupDef],
     components: &HashMap<String, ComponentDef>,
     name_to_tag: &HashMap<String, u32>,
-) -> HashSet<u32> {
-    let mut repeatable = HashSet::new();
-    let mut component_stack = HashSet::new();
-
-    for message in &messages.items {
-        for component in &message.components {
-            collect_component_repeatables(
-                &component.name,
-                components,
-                name_to_tag,
-                &mut repeatable,
-                &mut component_stack,
-            );
+) -> (HashMap<u32, GroupSpec>, HashMap<u32, u32>) {
+    let mut specs = HashMap::new();
+    let mut membership = HashMap::new();
+    let mut stack = HashSet::new();
+    for group in groups {
+        if let Some(spec) = build_group_spec(group, components, name_to_tag, &mut stack) {
+            membership.extend(collect_memberships(&spec, spec.count_tag));
+            specs.insert(spec.count_tag, spec);
         }
-        for group in &message.groups {
-            collect_group_repeatables(
-                group,
-                components,
-                name_to_tag,
-                &mut repeatable,
-                &mut component_stack,
-            );
+    }
+    // also scan groups reachable via components referenced in the message
+    for comp in components.values() {
+        for group in &comp.groups {
+            if let Some(spec) = build_group_spec(group, components, name_to_tag, &mut stack) {
+                membership.extend(collect_memberships(&spec, spec.count_tag));
+                specs.entry(spec.count_tag).or_insert(spec);
+            }
+        }
+    }
+    (specs, membership)
+}
+
+fn build_group_spec(
+    group: &GroupDef,
+    components: &HashMap<String, ComponentDef>,
+    name_to_tag: &HashMap<String, u32>,
+    stack: &mut HashSet<String>,
+) -> Option<GroupSpec> {
+    let count_tag = *name_to_tag.get(&group.name)?;
+    let delim = group
+        .fields
+        .first()
+        .and_then(|f| name_to_tag.get(&f.name))
+        .copied()
+        .unwrap_or(count_tag);
+    let mut order = Vec::new();
+    let mut required = Vec::new();
+    append_field_refs(&group.fields, name_to_tag, &mut order, &mut required);
+
+    let mut nested = HashMap::new();
+    for comp in &group.components {
+        append_component_fields_for_spec(
+            &comp.name,
+            components,
+            name_to_tag,
+            stack,
+            &mut order,
+            &mut required,
+            &mut nested,
+        );
+    }
+    for sub in &group.groups {
+        if let Some(spec) = build_group_spec(sub, components, name_to_tag, stack) {
+            order.push(spec.count_tag);
+            nested.insert(spec.count_tag, spec);
         }
     }
 
-    repeatable
+    dedupe(&mut order);
+    let entry_tag_set: HashSet<u32> = order.iter().copied().collect();
+    let entry_pos: HashMap<u32, usize> = order.iter().enumerate().map(|(i, t)| (*t, i)).collect();
+    Some(GroupSpec {
+        name: group.name.clone(),
+        count_tag,
+        delim,
+        entry_order: order,
+        entry_pos,
+        entry_tag_set,
+        nested,
+    })
 }
 
-fn collect_component_repeatables(
+fn append_component_fields_for_spec(
     name: &str,
     components: &HashMap<String, ComponentDef>,
     name_to_tag: &HashMap<String, u32>,
-    repeatable: &mut HashSet<u32>,
     stack: &mut HashSet<String>,
+    order: &mut Vec<u32>,
+    required: &mut Vec<u32>,
+    nested: &mut HashMap<u32, GroupSpec>,
 ) {
     if !stack.insert(name.to_string()) {
         return;
@@ -583,46 +654,165 @@ fn collect_component_repeatables(
         return;
     };
 
-    for group in &comp.groups {
-        collect_group_repeatables(group, components, name_to_tag, repeatable, stack);
+    append_field_refs(&comp.fields, name_to_tag, order, required);
+    for sub_comp in &comp.components {
+        append_component_fields_for_spec(
+            &sub_comp.name,
+            components,
+            name_to_tag,
+            stack,
+            order,
+            required,
+            nested,
+        );
     }
-    for child in &comp.components {
-        collect_component_repeatables(&child.name, components, name_to_tag, repeatable, stack);
+    for group in &comp.groups {
+        if let Some(spec) = build_group_spec(group, components, name_to_tag, stack) {
+            order.push(spec.count_tag);
+            nested.insert(spec.count_tag, spec);
+        }
     }
 
     stack.remove(name);
 }
 
-fn collect_group_repeatables(
-    group: &GroupDef,
-    components: &HashMap<String, ComponentDef>,
-    name_to_tag: &HashMap<String, u32>,
-    repeatable: &mut HashSet<u32>,
-    stack: &mut HashSet<String>,
-) {
-    if let Some(tag) = name_to_tag.get(&group.name) {
-        repeatable.insert(*tag);
+fn collect_memberships(spec: &GroupSpec, owner: u32) -> HashMap<u32, u32> {
+    let mut map = HashMap::new();
+    for tag in &spec.entry_tag_set {
+        map.insert(*tag, owner);
     }
-    for field in &group.fields {
-        if let Some(tag) = name_to_tag.get(&field.name) {
-            repeatable.insert(*tag);
+    for nested in spec.nested.values() {
+        map.insert(nested.count_tag, nested.count_tag);
+        map.extend(collect_memberships(nested, nested.count_tag));
+    }
+    map
+}
+
+fn collect_repeatable_from_specs(messages: &HashMap<String, MessageDef>) -> HashSet<u32> {
+    fn walk(spec: &GroupSpec, acc: &mut HashSet<u32>) {
+        acc.insert(spec.count_tag);
+        for tag in &spec.entry_tag_set {
+            acc.insert(*tag);
+        }
+        for nested in spec.nested.values() {
+            walk(nested, acc);
         }
     }
-    for comp in &group.components {
-        collect_component_repeatables(&comp.name, components, name_to_tag, repeatable, stack);
+
+    let mut repeatable = HashSet::new();
+    for msg in messages.values() {
+        for spec in msg.groups.values() {
+            walk(spec, &mut repeatable);
+        }
     }
-    for sub in &group.groups {
-        collect_group_repeatables(sub, components, name_to_tag, repeatable, stack);
-    }
+    repeatable
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decoder::schema::FixDictionary;
     use once_cell::sync::Lazy;
-    use std::sync::Mutex;
+    use std::sync::{Arc, Mutex};
 
     static LOOKUP_TEST_GUARD: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+
+    struct LookupCacheGuard {
+        originals: Vec<(String, Option<Arc<FixTagLookup>>)>,
+    }
+
+    impl LookupCacheGuard {
+        fn new(keys: &[&str]) -> Self {
+            let mut originals = Vec::new();
+            if let Ok(guard) = LOOKUPS.read() {
+                for key in keys {
+                    originals.push(((*key).to_string(), guard.get(*key).cloned()));
+                }
+            } else {
+                for key in keys {
+                    originals.push(((*key).to_string(), None));
+                }
+            }
+            Self { originals }
+        }
+    }
+
+    impl Drop for LookupCacheGuard {
+        fn drop(&mut self) {
+            if let Ok(mut guard) = LOOKUPS.write() {
+                for (key, original) in &self.originals {
+                    match original {
+                        Some(existing) => {
+                            guard.insert(key.clone(), existing.clone());
+                        }
+                        None => {
+                            guard.remove(key);
+                        }
+                    }
+                }
+            }
+            for (key, _) in &self.originals {
+                clear_override_cache_for(key);
+            }
+        }
+    }
+
+    fn small_override_dictionary() -> FixDictionary {
+        let xml = r#"
+<fix type='FIX' major='4' minor='4'>
+  <header>
+    <field name='BeginString' required='Y'/>
+  </header>
+  <trailer>
+    <field name='CheckSum' required='Y'/>
+  </trailer>
+  <messages>
+    <message name='Heartbeat' msgtype='0' msgcat='admin'>
+      <field name='MsgType' required='Y'/>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number='8' name='BeginString' type='STRING'/>
+    <field number='10' name='CheckSum' type='STRING'/>
+    <field number='35' name='MsgType' type='STRING'>
+      <value enum='0' description='Heartbeat'/>
+    </field>
+  </fields>
+</fix>
+"#;
+        FixDictionary::from_xml(xml).expect("override test dictionary parses")
+    }
+
+    fn small_detected_dictionary() -> FixDictionary {
+        let xml = r#"
+<fix type='FIX' major='5' minor='0' servicepack='2'>
+  <header>
+    <field name='BeginString' required='Y'/>
+  </header>
+  <trailer>
+    <field name='CheckSum' required='Y'/>
+  </trailer>
+  <messages>
+    <message name='Heartbeat' msgtype='0' msgcat='admin'>
+      <field name='MsgType' required='Y'/>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number='8' name='BeginString' type='STRING'/>
+    <field number='10' name='CheckSum' type='STRING'/>
+    <field number='35' name='MsgType' type='STRING'>
+      <value enum='0' description='Heartbeat'/>
+    </field>
+    <field number='1128' name='ApplVerID' type='STRING'>
+      <value enum='9' description='FIX50SP2'/>
+    </field>
+  </fields>
+</fix>
+"#;
+        FixDictionary::from_xml(xml).expect("detected test dictionary parses")
+    }
 
     #[test]
     fn detects_schema_from_default_appl_ver_id() {
@@ -661,7 +851,12 @@ mod tests {
     #[test]
     fn override_uses_fallback_dictionary_for_missing_tags() {
         let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
+        let _cache_guard = LookupCacheGuard::new(&["FIX44", "FIX50SP2"]);
         reset_override_warn();
+        register_dictionary("FIX44", &small_override_dictionary());
+        register_dictionary("FIX50SP2", &small_detected_dictionary());
+        clear_override_cache_for("FIX44");
+        clear_override_cache_for("FIX50SP2");
         let msg = "8=FIXT.1.1\u{0001}35=0\u{0001}1128=9\u{0001}10=000\u{0001}";
         let dict = load_dictionary_with_override(msg, Some("FIX44"));
         assert_eq!(
@@ -673,5 +868,44 @@ mod tests {
             !override_warn_triggered(),
             "successful fallback should not trigger override warning flag"
         );
+    }
+
+    #[test]
+    fn repeatable_tags_include_nested_groups() {
+        let _lock = LOOKUP_TEST_GUARD.lock().unwrap();
+        let xml = r#"
+<fix type='FIX' major='4' minor='4'>
+  <header><field name='BeginString' required='Y'/></header>
+  <trailer><field name='CheckSum' required='Y'/></trailer>
+  <messages>
+    <message name='Test' msgtype='T' msgcat='app'>
+      <group name='NoOuter'>
+        <field name='OuterField'/>
+        <group name='NoInner'>
+          <field name='InnerField'/>
+        </group>
+      </group>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number='8' name='BeginString' type='STRING'/>
+    <field number='10' name='CheckSum' type='STRING'/>
+    <field number='35' name='MsgType' type='STRING'>
+      <value enum='T' description='Test'/>
+    </field>
+    <field number='900' name='NoOuter' type='NUMINGROUP'/>
+    <field number='901' name='OuterField' type='STRING'/>
+    <field number='910' name='NoInner' type='NUMINGROUP'/>
+    <field number='911' name='InnerField' type='STRING'/>
+  </fields>
+</fix>
+"#;
+        let dict = FixDictionary::from_xml(xml).expect("dictionary parses");
+        let lookup = FixTagLookup::from_dictionary(&dict, "TEST");
+        assert!(lookup.is_repeatable(900), "outer group count tag tracked");
+        assert!(lookup.is_repeatable(901), "outer field repeatable");
+        assert!(lookup.is_repeatable(910), "nested group count tag tracked");
+        assert!(lookup.is_repeatable(911), "nested field repeatable");
     }
 }

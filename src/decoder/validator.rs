@@ -2,7 +2,7 @@
 // SPDX-FileCopyrightText: 2025 Steve Clarke <stephenlclarke@mac.com> - https://xyzzy.tools
 
 use crate::decoder::fixparser::{FieldValue, parse_fix};
-use crate::decoder::tag_lookup::{FixTagLookup, MessageDef};
+use crate::decoder::tag_lookup::{FixTagLookup, GroupSpec as MessageDefGroupSpec, MessageDef};
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -53,6 +53,12 @@ pub fn validate_fix_message(msg: &str, dict: &FixTagLookup) -> ValidationReport 
         errors.extend(validate_field_ordering(
             &fields,
             &msg_def.field_order,
+            &mut tag_errors,
+        ));
+        errors.extend(validate_repeating_groups(
+            &fields,
+            msg_def,
+            dict,
             &mut tag_errors,
         ));
     }
@@ -200,6 +206,142 @@ fn validate_field_ordering(
         }
     }
     errors
+}
+
+fn validate_repeating_groups(
+    fields: &[FieldValue],
+    msg_def: &MessageDef,
+    dict: &FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+    let mut idx = 0;
+    while idx < fields.len() {
+        let tag = fields[idx].tag;
+        if let Some(spec) = msg_def.groups.get(&tag) {
+            let (consumed, mut errs) =
+                validate_group_instance(fields, idx, spec, msg_def, dict, tag_errors);
+            errors.append(&mut errs);
+            idx += consumed;
+        } else {
+            if let Some(owner) = msg_def.group_membership.get(&tag) {
+                let err = format!(
+                    "Tag {} ({}) appears outside of repeating group {}",
+                    tag,
+                    dict.field_name(tag),
+                    owner
+                );
+                errors.push(err.clone());
+                tag_errors.entry(tag).or_default().push(err);
+            }
+            idx += 1;
+        }
+    }
+    errors
+}
+
+fn validate_group_instance(
+    fields: &[FieldValue],
+    start_idx: usize,
+    spec: &MessageDefGroupSpec,
+    msg_def: &MessageDef,
+    dict: &FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> (usize, Vec<String>) {
+    let mut errors = Vec::new();
+    let count = fields[start_idx]
+        .value
+        .parse::<usize>()
+        .unwrap_or_else(|_| {
+            let err = format!(
+                "Invalid NumInGroup value '{}' for tag {}",
+                fields[start_idx].value, spec.count_tag
+            );
+            errors.push(err.clone());
+            tag_errors
+                .entry(spec.count_tag)
+                .or_default()
+                .push(err.clone());
+            0
+        });
+    let mut entries = 0usize;
+    let mut idx = start_idx + 1;
+
+    while idx < fields.len() && entries < count {
+        if fields[idx].tag != spec.delim {
+            if msg_def.group_membership.get(&fields[idx].tag) == Some(&spec.count_tag) {
+                let err = format!(
+                    "Expected group delimiter tag {} before tag {}",
+                    spec.delim, fields[idx].tag
+                );
+                errors.push(err.clone());
+                tag_errors.entry(fields[idx].tag).or_default().push(err);
+                idx += 1;
+                continue;
+            } else {
+                break;
+            }
+        }
+        let (consumed, mut errs) =
+            validate_group_entry(fields, idx, spec, msg_def, dict, tag_errors);
+        errors.append(&mut errs);
+        idx += consumed;
+        entries += 1;
+    }
+
+    if entries != count {
+        let err = format!(
+            "NumInGroup {} declared {}, but {} instance(s) found",
+            spec.count_tag, count, entries
+        );
+        errors.push(err.clone());
+        tag_errors.entry(spec.count_tag).or_default().push(err);
+    }
+    (idx - start_idx, errors)
+}
+
+fn validate_group_entry(
+    fields: &[FieldValue],
+    start_idx: usize,
+    spec: &MessageDefGroupSpec,
+    msg_def: &MessageDef,
+    dict: &FixTagLookup,
+    tag_errors: &mut HashMap<u32, Vec<String>>,
+) -> (usize, Vec<String>) {
+    let mut errors = Vec::new();
+    let mut idx = start_idx;
+    let mut last_pos = -1isize;
+    while idx < fields.len() {
+        let tag = fields[idx].tag;
+        if tag == spec.delim && idx != start_idx {
+            break;
+        }
+        if let Some(nested) = spec.nested.get(&tag) {
+            let (consumed, mut errs) =
+                validate_group_instance(fields, idx, nested, msg_def, dict, tag_errors);
+            errors.append(&mut errs);
+            idx += consumed;
+            continue;
+        }
+        if let Some(pos) = spec.entry_order.iter().position(|t| *t == tag) {
+            if (pos as isize) < last_pos {
+                let err = format!(
+                    "Tag {} ({}) out of order within repeating group {}",
+                    tag,
+                    dict.field_name(tag),
+                    spec.count_tag
+                );
+                errors.push(err.clone());
+                tag_errors.entry(tag).or_default().push(err);
+            }
+            last_pos = pos as isize;
+            idx += 1;
+        } else {
+            // Tag does not belong to this group; stop so parent can handle it.
+            break;
+        }
+    }
+    (idx - start_idx, errors)
 }
 
 fn validate_checksum_field(

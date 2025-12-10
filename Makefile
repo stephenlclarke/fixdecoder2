@@ -13,10 +13,10 @@ prepare:
 	@cargo run --quiet --bin generate_sensitive_tags >/dev/null
 
 build: prepare
-	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build'
+	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build --workspace'
 
 build-release: prepare
-	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build --release'
+	@bash -lc 'source $(CI_SCRIPT) && ensure_build_metadata && cargo fmt --all && cargo build --workspace --release'
 	@python3 ci/update_readme.py
 
 .PHONY: update-readme
@@ -28,7 +28,7 @@ scan: prepare
 		source $(CI_SCRIPT) && \
 		ensure_build_metadata && \
 		cargo fmt --all --check && \
-		cargo clippy --all-targets -- -D warnings && \
+		cargo clippy --workspace --all-targets -- -D warnings && \
 		mkdir -p target/coverage && \
 		if command -v cargo-audit >/dev/null 2>&1; then \
 			echo "Running cargo-audit (text output)"; \

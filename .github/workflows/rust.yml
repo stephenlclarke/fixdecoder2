@@ -120,7 +120,7 @@ jobs:
             export CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_RUSTFLAGS="-C target-feature=+crt-static"
           fi
           cargo fmt --all
-          cargo build --release --locked --target ${{ matrix.target }}
+          cargo build --release --locked --workspace --target ${{ matrix.target }}
         env:
           RUSTFLAGS: ""
       - name: Stage artifact
@@ -128,11 +128,23 @@ jobs:
         run: |
           mkdir -p dist
           cp "${{ matrix.artifact_path }}" "dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}"
+          pcap_path="target/${{ matrix.target }}/release/pcap2fix${{ matrix.ext }}"
+          if [ -f "$pcap_path" ]; then
+            cp "$pcap_path" "dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}"
+          else
+            echo "pcap2fix binary not found at $pcap_path" >&2
+            exit 1
+          fi
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: fixdecoder-${{ matrix.asset_suffix }}
           path: dist/fixdecoder-${{ matrix.asset_suffix }}${{ matrix.ext }}
+      - name: Upload pcap2fix artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pcap2fix-${{ matrix.asset_suffix }}
+          path: dist/pcap2fix-${{ matrix.asset_suffix }}${{ matrix.ext }}
 
   quality:
     name: Lint & Coverage
@@ -321,24 +333,26 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          pattern: fixdecoder-*
+          pattern: "*"
           path: dist
           merge-multiple: true
       - name: Rename artifacts with version
         run: |
           ver="${{ steps.version.outputs.version }}"
           shopt -s nullglob
-          for f in dist/fixdecoder-*; do
+          for f in dist/fixdecoder-* dist/pcap2fix-*; do
             base="${f##*/}"
             case "$base" in
-              fixdecoder-*.exe)
-                suffix="${base#fixdecoder-}"
+              fixdecoder-*.exe|pcap2fix-*.exe)
+                prefix="${base%%-*}"
+                suffix="${base#${prefix}-}"
                 suffix="${suffix%.exe}"
-                mv "$f" "dist/fixdecoder-${ver}.${suffix}.exe"
+                mv "$f" "dist/${prefix}-${ver}.${suffix}.exe"
                 ;;
-              fixdecoder-*)
-                suffix="${base#fixdecoder-}"
-                mv "$f" "dist/fixdecoder-${ver}.${suffix}"
+              fixdecoder-*|pcap2fix-*)
+                prefix="${base%%-*}"
+                suffix="${base#${prefix}-}"
+                mv "$f" "dist/${prefix}-${ver}.${suffix}"
                 ;;
             esac
           done
