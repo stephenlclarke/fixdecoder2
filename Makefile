@@ -27,9 +27,17 @@ scan: prepare
 		mkdir -p target/coverage && \
 		if command -v cargo-audit >/dev/null 2>&1; then \
 			echo "Running cargo-audit (text output)"; \
-			cargo audit --no-fetch || true; \
+			if [ -d "$${HOME}/.cargo/advisory-db" ]; then \
+				cargo audit --no-fetch || true; \
+			else \
+				cargo audit || true; \
+			fi; \
 			echo "Running cargo-audit (JSON) → target/coverage/rustsec.json"; \
-			cargo audit --no-fetch --json > target/coverage/rustsec.json || true; \
+			if [ -d "$${HOME}/.cargo/advisory-db" ]; then \
+				cargo audit --no-fetch --json > target/coverage/rustsec.json || true; \
+			else \
+				cargo audit --json > target/coverage/rustsec.json || true; \
+			fi; \
 			echo "Converting RustSec report to Sonar generic issues (target/coverage/sonar-generic-issues.json)"; \
 			python3 ci/convert_rustsec_to_sonar.py target/coverage/rustsec.json target/coverage/sonar-generic-issues.json || true; \
 		else \
