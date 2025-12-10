@@ -44,124 +44,99 @@ I have written utilities like this in past in Java, Python, C, C++, [go](https:/
 
 ---
 
-# How to use it
+## What is it
 
-The utility behaves like the `cat` utility in `Linux`, except as it reads the input (either piped in from `stdin` or from a filename specified on the commandline) it scans each line for `FIX protocol` messages and prints them out highlighted in bold white while the rest of the line will be in a mid grey colour. After the line is output it will be followed by a detailed breakdown of all the `FIX Protocol` tags that were found in the message. The detailed output will use the appropriate `FIX` dictionary for the version of `FIX` specified in `BeginString (tag 8)` tag. It will also look at `DefaultApplVerID (tag 1137)` when `8=FIXT.1.1` is detected in the message.
+fixdecoder is a FIX-aware “tail-like” tool and dictionary explorer. It reads from stdin or multiple log files, detects and prettifies FIX messages in stream, and fits naturally into pipelines. Each highlighted message is followed by a detailed tag breakdown using the correct dictionary for BeginString (8) (or DefaultApplVerID (1137) when 8=FIXT.1.1). It can validate on the fly (`--validate`), reporting protocol issues as it decodes, and track order state with summaries (`--summary`). For lookups, `--info` shows available/overridden dictionaries, and `--message`, `--component`, or `--tag` inspect definitions in the selected FIX version (`--fix` or default) without a live decode.
 
-## Running the utility
-
-<!-- USAGE:START -->
-```bash
-fixdecoder 0.3.0 (branch:develop, commit:eec008a) [rust:1.91.1]
-FIX protocol utility - Dictionary lookup, file decoder, validator & prettifier
-
-Usage: fixdecoder [OPTIONS] [FILE]...
-
-Arguments:
-  [FILE]...  
-
-Options:
-      --fix <VER>           FIX version to use [default: 44]
-      --xml <FILE>          Path to alternative FIX XML dictionary (repeatable)
-      --message [<MSG>]     FIX Message name or MsgType (omit value to list all)
-      --component [<NAME>]  FIX Component to display (omit value to list all)
-      --tag [<TAG>]         FIX Tag number to display (omit value to list all)
-      --column              Display enums in columns
-      --header              Include Header block
-      --trailer             Include Trailer block
-      --verbose             Show full message structure with enums
-      --info                Show schema summary
-      --secret              Obfuscate sensitive FIX tag values
-      --validate            Validate FIX messages during decoding
-      --colour [<yes|no>]   Force coloured output
-      --delimiter <CHAR>    Display delimiter between FIX fields (default: SOH)
-      --version             Print version information and exit
-      --summary             Track order state across messages and print a summary
-  -f, --follow              Stream input like tail -f
-  -h, --help                Print help
-
-Command line option examples:
-
-  FIX dictionary lookup
-
-    Query FIX dictionary contents by FIX Message Name or MsgType:
-
-      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--message[=NAME|MSGTYPE] [--verbose] [--column] [--header] [--trailer]
-
-      $ fixdecoder --message=NewOrderSingle --verbose --column --header --trailer
-      $ fixdecoder --message=D --verbose --column --header --trailer
-    
-    Query FIX dictionary contents by FIX Tag number:
-
-      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--tag[=TAG] [--verbose] [--column]
-
-      $ fixdecoder --tag=44 --verbose --column
-      
-    Query FIX dictionary contents by FIX Component Name:
-
-      fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--component[=NAME] [--verbose] [--column]
-
-      $ fixdecoder --component=Instrument --verbose --column
-
-  Show summary information about available FIX dictionaries:
-
-    fixdecoder [[--fix=44] [--xml=FILE --xml=FILE2 ...]] [--info]
-
-    $ fixdecoder --info
-
-  Prettify FIX log files with optional validation and obfuscation; if output is piped then colour is disabled by
-  default but can be forced on with --colour=yes:
-
-    fixdecoder [--xml=FILE --xml=FILE2 ...] [--validate] [--colour=yes|no] [--secret] [--summary] [--follow] [--fix=VER] [--delimiter=CHAR] [file1.log file2.log ...]
-
-    Validate and Obfuscate a FIX logfile.
-
-    $ fixdecoder --validate --secret logs/fix.log
-
-    Decode all the NewOrderSingle messages in a FIX logfile and output the fix messages using a custom delimiter
-    also force colour mode because this example pipes the output into less. Normally colour mode is turned off
-    when piping the output due to the output containing ANSI control chars which may mess up processing further
-    down the pipe chain.
-
-    $ grep '35=D' logs/fix.log | fixdecoder --colour=yes --delimiter='|' | less
-
-    Force the decoding of a FIX log to use the FIX 4.4 dictionary. Only uses the version of the FIX dictionary
-    specified in the FIX message header if the tag being processed is not defined in the override dictionary.
-    for example FIX 4.4 does not have the FIX 4.2 tag 20 (ExecTransType)
-
-    $ fixdecoder --fix=44 trades.log
-
-    Process a FIX log file and display an order summary for each order that is processed.
-
-    $ fixdecoder --summary --follow logs/fix.log
-
-```
-<!-- USAGE:END -->
+## Quick start
 
 ```bash
-❯ target/debug/fixdecoder --info
-fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
-Available FIX Dictionaries: FIX27,FIX30,FIX40,FIX41,FIX42,FIX43,FIX44,FIX50,FIX50SP1,FIX50SP2,FIXT11
+# Stream and prettify stdin (pipeline-friendly)
+cat fixlog.txt | fixdecoder
 
-Loaded dictionaries:
-  Version     ServicePack   Fields  Components    Messages Source
-  FIX27                 0      138           2          27 built-in
-  FIX30                 0      138           2          27 built-in
-  FIX40                 0      138           2          27 built-in
-  FIX41                 0      206           2          28 built-in
-  FIX42                 0      405           2          46 built-in
-  FIX43                 0      635          12          68 built-in
-  FIX44                 0      912         106          93 built-in
-  FIX50                 0     1090         123          93 built-in
-  FIX50SP1              1     1373         165         105 built-in
-  FIX50SP2              2     6028         727         156 built-in
-  FIXT11                0       71           4           8 built-in
+# Stream with validation + order summaries
+cat fixlog.txt | fixdecoder --validate --summary
 ```
+<!-- Screenshot: cat fixlog.txt | fixdecoder -->
+<!-- Screenshot: cat fixlog.txt | fixdecoder --validate --summary -->
+
+## Running the fixdecoder utility
+
+You can run fixdecoder anywhere you can run a Rust binary — no extra OS dependencies or runtime services are required. It ships with a full set of embedded FIX dictionaries. The sections below cover the key options for selecting and browsing dictionaries, controlling output/formatting, and adjusting processing modes.
+
+## Key options at a glance
+
+- Dictionaries: `--xml`, `--fix`, `--info`, `--message`, `--component`, `--tag`
+- Output/layout: `--column`, `--verbose`, `--header`, `--trailer`, `--colour`, `--delimiter`
+- Processing modes: `--follow`, `--validate`, `--secret`, `--summary`
+
+## `--xml`
+
+The `--xml` flag lets you load custom FIX dictionaries from XML files; you can pass it multiple times to register several custom dictionaries. Each file is parsed, normalised to a canonical key (e.g., FIX44, FIX50SP2), and has FIXT11 session header/trailer injected for 5.0+ if missing. Custom entries are registered for tag lookup and schema loading; they override built-ins for the same key and replace earlier `--xml` files for that key, with warnings emitted in both cases.
+
+The XML dictionaries can be downloaded from the [QuickFIX GitHub Repo](https://github.com/quickfix/quickfix/tree/master/spec)
+
+## `--fix`
+
+The `--fix` option allows you to specify the default FIX dictionary. This defaults to FIX 4.4 (`44`). It accepts either just the version digits (e.g., `44`, `4.4`) or the same value prefixed with FIX/fix (e.g., `FIX44`, `fix4.4`). The parser normalises your input by stripping dots, uppercasing, and adding FIX if it’s missing; it then checks that key against built‑ins (`FIX27`…`FIXT11`) and any custom `--xml` overrides. If the normalised key isn’t known, it errors.
+
+## `--info`
+
+`--info` is an informational mode: it prints the list of available FIX dictionary keys (built-ins plus any loaded via `--xml`), then a table of loaded dictionaries with counts and their source (built-in vs file path). The table highlights the currently selected/default FIX version (from `--fix` or the default `44`) with a leading `*` so you can see which dictionary will be used. It does not decode messages or print schema details; it’s meant to verify which dictionaries are present, which ones are being overridden by custom XML, and which version is active.
+
+![--info](docs/info_command.png)
+
+## Querying the FIX dictionaries `--message`, `--component` and `--tag`
+
+Use these flags to explore the active FIX dictionary. `--verbose` adds detail / metadata, `--column` uses a compact table layout. `--header`/`--trailer` only apply to `--message` and `--component` (not `--tag`).
+
+### `--message[=<NAME|MsgType>]`
+
+Browse messages. With no value, list all message types (use --`column` for a compact view). With a name or MsgType (e.g., `D` or `NewOrderSingle`), render the message structure (fields, components, repeating groups); `--header`/`--trailer` include session blocks. Reports “Message not found” if absent.
+
+### `--component[=<NAME>]`
+
+Browse components. With no value, list all components (or use `--column`). With a name, render that component’s fields, nested components, and repeating groups. Reports “Component not found” if absent.
+
+### `--tag[=<NUMBER>]`
+
+Browse fields. With no value, list all tags (or use `--column`). With a tag number, show that field’s details (name, type, enums, etc.). Reports “Tag not found” if absent.
+
+### `--validate`
+
+Validate each decoded FIX message against the active dictionary (honours `--fix` and any `--xml` overrides). Checks MsgType, BodyLength, checksum, required fields, enum/type correctness, field ordering, repeating-group structure, and duplicate disallowed tags. Validation runs alongside prettified output; any errors are appended after the message. It doesn’t stop the stream—use it to flag protocol issues while decoding
+
+### `--secret`
+
+Obfuscate sensitive FIX fields while decoding. When enabled, values for a predefined set of sensitive tags (e.g., session IDs, sender/target IDs) are replaced with stable aliases (e.g., `SenderCompID0001`) so logs stay readable without exposing real identifiers. Obfuscation is applied per line/message and resets between files; disabled by default.
+
+### `--colour[=yes|no]`
+
+Control coloured output. By default, colours are shown when writing to a terminal and disabled when output is piped. Use `--colour`/`--colour=yes` to force colours on, or `--colour=no` to force them off. Non-tty output defaults to no colour unless you explicitly opt in.
+
+### `--delimiter=<CHAR>`
+
+Set the display delimiter between FIX fields (default: `SOH`). Specify a single character after `=` sign.
+
+Accepted values:
+
+- A single literal character (e.g.`,`, `|`, or a single Unicode character like `—`).
+  
+- SOH (case-insensitive) or a hex escape like `\x01`/`0x01` (quote to protect the backslash, e.g. `--delimiter='\x1f'`).
+
+Empty values or anything longer than one character are rejected.
+
+## `-f`, `--follow`
+
+Stream input like `tail -f`. Keeps reading and decoding as new data arrives on stdin or a file, sleeping briefly on `EOF` rather than exiting, until interrupted. This mirrors `tail -f` behaviour but with FIX decoding, validation, and prettification applied in real time.
+
+## `--summary`
+
+Track FIX order lifecycles and emit a summary instead of full decoded messages. When enabled, each message is consumed into an order tracker (keyed by `OrderID`/`ClOrdID`/`OrigClOrdID`), updating state, quantities, prices, and events. At the end (or live in `--follow` mode) it prints a concise per-order summary/footer using the chosen display delimiter. This mode suppresses the usual prettified message output; use it to monitor order state across a stream or log.
 
 ## Download it
 
-Check out the Repo's [Releases Page](https://github.com/stephenlclarke/fixdecoder2/releases)
-to see what versions are available for the computer you want to run it on.
+Check out the Repo's [Releases Page](https://github.com/stephenlclarke/fixdecoder2/releases) to see what versions are available for the computer you want to run it on.
 
 ## Build it
 
@@ -530,15 +505,17 @@ fixdecoder 0.2.0 (branch:develop, commit:7a2d535) [rust:1.91.1]
   git clone git@github.com:stephenlclarke/fixdecoder2.git
 ```
 
-# PCAP → FIX filter (`pcap2fix`)
+# PCAP to FIX filter (`pcap2fix`)
 
-The workspace includes a helper that reassembles TCP streams from PCAP data and emits FIX messages to stdout so you can pipe them into `fixdecoder`.
+The workspace includes a helper that reassembles TCP streams from PCAP data and emits FIX messages to stdout so you can pipe them into `fixdecoder`. I have wrapped it in a shell script (`./scripts/capture_and_decode.sh`) to make it easy to run.
 
 - Build: `cargo build -p pcap2fix` (also built via `make build`).
 - Offline: `pcap2fix --input capture.pcap | fixdecoder`
 - Live (needs tcpdump/dumpcap): `tcpdump -i eth0 -w - 'tcp port 9876' | pcap2fix --port 9876 | fixdecoder`
 - Delimiter defaults to SOH; override with `--delimiter`.
 - Flow buffers are capped (size + idle timeout) to avoid runaway memory during long captures.
+
+![Capture and Decode](docs/capture_and_decode.png)
 
 # Technical Notes on the use of the `--summary` flag
 
