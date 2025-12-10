@@ -173,8 +173,7 @@ Then build it. Debug version with clippy and code coverage
 
 ```bash
 ❯ make clean build scan coverage build-release
-    Cleaning [                         ]   0.00%                                                                                                                                                                                         
-     Removed 29068 files, 2.8GiB total
+     Removed 51032 files, 3.9GiB total
 
 >> Ensuring Rust toolchain and coverage tools
 
@@ -182,205 +181,235 @@ Then build it. Debug version with clippy and code coverage
 info: component 'llvm-tools' for target 'aarch64-apple-darwin' is up to date
 
 >> Ensuring FIX XML specs are present
-   Compiling fixdecoder v0.2.1 (/Users/sclarke/github/fixdecoder2)
-warning: fixdecoder@0.2.1: Building fixdecoder v0.2.1 (branch:develop, commit:02b044e) [rust:1.91.1]
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.59s
+   Compiling minimal-lexical v0.2.1
+   Compiling thiserror v1.0.69
+   Compiling fixdecoder v0.3.0 (/Users/sclarke/github/fixdecoder2)
+   Compiling thiserror-impl v1.0.69
+   Compiling arrayvec v0.7.6
+   Compiling circular v0.3.0
+   Compiling etherparse v0.15.0
+   Compiling nom v7.1.3
+warning: fixdecoder@0.3.0: Building fixdecoder 0.3.0 (branch:develop, commit:9f467f8) [rust:1.91.1]
+   Compiling rusticata-macros v4.1.0
+   Compiling pcap-parser v0.14.1
+   Compiling pcap2fix v0.1.0 (/Users/sclarke/github/fixdecoder2/pcap2fix)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 1.88s
     Checking memchr v2.7.6
+    Checking anstyle v1.0.13
+    Checking utf8parse v0.2.2
     Checking bitflags v2.10.0
     Checking regex-syntax v0.8.8
-    Checking anstyle v1.0.13
-    Checking cfg-if v1.0.4
     Checking libc v0.2.178
-   Compiling rustix v1.1.2
+    Checking anstyle-query v1.1.5
+    Checking is_terminal_polyfill v1.70.2
+    Checking colorchoice v1.0.4
     Checking crossbeam-utils v0.8.21
     Checking num-traits v0.2.19
-    Checking utf8parse v0.2.2
-    Checking objc2-encode v4.1.0
-    Checking colorchoice v1.0.4
-    Checking anstyle-query v1.1.5
-    Checking anstyle-parse v0.2.7
-    Checking is_terminal_polyfill v1.70.2
-    Checking serde_core v1.0.228
-    Checking clap_lex v0.7.6
-    Checking core-foundation-sys v0.8.7
     Checking strsim v0.11.1
-    Checking anstream v0.6.21
-    Checking objc2 v0.6.3
-    Checking aho-corasick v1.1.4
-    Checking crossbeam-epoch v0.9.18
-   Compiling fixdecoder v0.2.1 (/Users/sclarke/github/fixdecoder2)
-   Compiling getrandom v0.3.4
-    Checking iana-time-zone v0.1.64
-    Checking clap_builder v4.5.53
+    Checking anstyle-parse v0.2.7
+    Checking cfg-if v1.0.4
+   Compiling rustix v1.1.2
+    Checking objc2-encode v4.1.0
+    Checking clap_lex v0.7.6
+    Checking serde_core v1.0.228
+    Checking anyhow v1.0.100
     Checking predicates-core v1.0.9
-    Checking once_cell v1.21.3
+    Checking core-foundation-sys v0.8.7
+    Checking objc2 v0.6.3
+    Checking anstream v0.6.21
+   Compiling fixdecoder v0.3.0 (/Users/sclarke/github/fixdecoder2)
+    Checking crossbeam-epoch v0.9.18
+    Checking aho-corasick v1.1.4
+    Checking normalize-line-endings v0.3.0
+    Checking clap_builder v4.5.53
+    Checking iana-time-zone v0.1.64
     Checking crossbeam-deque v0.8.6
     Checking either v1.15.0
-    Checking chrono v0.4.42
-    Checking rayon-core v1.13.0
+    Checking termtree v0.5.1
     Checking float-cmp v0.10.0
-    Checking anyhow v1.0.100
+    Checking difflib v0.4.0
+    Checking rayon-core v1.13.0
+    Checking once_cell v1.21.3
+   Compiling assert_cmd v2.1.1
+   Compiling getrandom v0.3.4
+    Checking predicates-tree v1.0.12
+    Checking chrono v0.4.42
+    Checking rayon v1.11.0
     Checking errno v0.3.14
     Checking nix v0.30.1
-    Checking rayon v1.11.0
-    Checking roxmltree v0.21.1
-   Compiling assert_cmd v2.1.1
-    Checking block2 v0.6.2
-    Checking normalize-line-endings v0.3.0
-    Checking termtree v0.5.1
-    Checking difflib v0.4.0
     Checking wait-timeout v0.2.1
-    Checking regex-automata v0.4.13
-    Checking predicates-tree v1.0.12
+    Checking roxmltree v0.21.1
+    Checking block2 v0.6.2
+warning: fixdecoder@0.3.0: Building fixdecoder 0.3.0 (branch:develop, commit:9f467f8) [rust:1.91.1]
+    Checking minimal-lexical v0.2.1
     Checking fastrand v2.3.0
+    Checking arrayvec v0.7.6
     Checking dispatch2 v0.3.0
+    Checking nom v7.1.3
+    Checking circular v0.3.0
+    Checking etherparse v0.15.0
+    Checking regex-automata v0.4.13
+    Checking thiserror v1.0.69
     Checking clap v4.5.53
-    Checking serde v1.0.228
     Checking ctrlc v3.5.1
-warning: fixdecoder@0.2.1: Building fixdecoder v0.2.1 (branch:develop, commit:02b044e) [rust:1.91.1]
+    Checking serde v1.0.228
     Checking terminal_size v0.4.3
-    Checking tempfile v3.23.0
     Checking quick-xml v0.36.2
+    Checking tempfile v3.23.0
+    Checking rusticata-macros v4.1.0
+    Checking pcap-parser v0.14.1
+    Checking pcap2fix v0.1.0 (/Users/sclarke/github/fixdecoder2/pcap2fix)
     Checking regex v1.12.2
     Checking bstr v1.12.1
     Checking predicates v3.1.3
-    Finished `dev` profile [unoptimized + debuginfo] target(s) in 2.87s
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 3.30s
 Running cargo-audit (text output)
-    Fetching advisory database from `https://github.com/RustSec/advisory-db.git`
       Loaded 884 security advisories (from /Users/sclarke/.cargo/advisory-db)
-    Updating crates.io index
-    Scanning Cargo.lock for vulnerabilities (105 crate dependencies)
+    Scanning Cargo.lock for vulnerabilities (115 crate dependencies)
 Running cargo-audit (JSON) → target/coverage/rustsec.json
 Converting RustSec report to Sonar generic issues (target/coverage/sonar-generic-issues.json)
 info: cargo-llvm-cov currently setting cfg(coverage); you can opt-out it by passing --no-cfg-coverage
    Compiling libc v0.2.178
-   Compiling proc-macro2 v1.0.103
-   Compiling unicode-ident v1.0.22
    Compiling memchr v2.7.6
+   Compiling proc-macro2 v1.0.103
    Compiling quote v1.0.42
+   Compiling unicode-ident v1.0.22
    Compiling autocfg v1.5.0
-   Compiling bitflags v2.10.0
-   Compiling crossbeam-utils v0.8.21
-   Compiling objc2 v0.6.3
-   Compiling anstyle v1.0.13
    Compiling regex-syntax v0.8.8
-   Compiling cfg-if v1.0.4
+   Compiling crossbeam-utils v0.8.21
+   Compiling bitflags v2.10.0
+   Compiling anstyle v1.0.13
+   Compiling objc2 v0.6.3
    Compiling utf8parse v0.2.2
+   Compiling anstyle-parse v0.2.7
+   Compiling cfg-if v1.0.4
+   Compiling colorchoice v1.0.4
+   Compiling is_terminal_polyfill v1.70.2
    Compiling rustix v1.1.2
    Compiling cfg_aliases v0.2.1
-   Compiling objc2-encode v4.1.0
    Compiling serde_core v1.0.228
-   Compiling nix v0.30.1
+   Compiling objc2-encode v4.1.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstream v0.6.21
    Compiling num-traits v0.2.19
    Compiling aho-corasick v1.1.4
-   Compiling anstyle-parse v0.2.7
-   Compiling is_terminal_polyfill v1.70.2
+   Compiling nix v0.30.1
+   Compiling rayon-core v1.13.0
+   Compiling strsim v0.11.1
+   Compiling anyhow v1.0.100
+   Compiling crossbeam-epoch v0.9.18
    Compiling serde v1.0.228
    Compiling semver v1.0.27
-   Compiling rayon-core v1.13.0
-   Compiling anstyle-query v1.1.5
-   Compiling colorchoice v1.0.4
-   Compiling anstream v0.6.21
-   Compiling rustc_version v0.4.1
-   Compiling regex-automata v0.4.13
-   Compiling syn v2.0.111
-   Compiling block2 v0.6.2
-   Compiling clap_lex v0.7.6
-   Compiling crossbeam-epoch v0.9.18
-   Compiling anyhow v1.0.100
-   Compiling crossbeam-deque v0.8.6
    Compiling heck v0.5.0
-   Compiling core-foundation-sys v0.8.7
-   Compiling strsim v0.11.1
-   Compiling iana-time-zone v0.1.64
-   Compiling fixdecoder v0.2.1 (/Users/sclarke/github/fixdecoder2)
+   Compiling clap_lex v0.7.6
    Compiling clap_builder v4.5.53
-   Compiling errno v0.3.14
-   Compiling dispatch2 v0.3.0
-   Compiling either v1.15.0
-   Compiling getrandom v0.3.4
+   Compiling regex-automata v0.4.13
+   Compiling block2 v0.6.2
+   Compiling syn v2.0.111
+   Compiling rustc_version v0.4.1
+   Compiling crossbeam-deque v0.8.6
+   Compiling core-foundation-sys v0.8.7
    Compiling predicates-core v1.0.9
-   Compiling once_cell v1.21.3
+   Compiling iana-time-zone v0.1.64
+   Compiling errno v0.3.14
    Compiling regex v1.12.2
-   Compiling chrono v0.4.42
-   Compiling rayon v1.11.0
-   Compiling float-cmp v0.10.0
-   Compiling terminal_size v0.4.3
-   Compiling roxmltree v0.21.1
-   Compiling difflib v0.4.0
+   Compiling dispatch2 v0.3.0
+   Compiling fixdecoder v0.3.0 (/Users/sclarke/github/fixdecoder2)
+   Compiling once_cell v1.21.3
    Compiling termtree v0.5.1
+   Compiling difflib v0.4.0
+   Compiling getrandom v0.3.4
    Compiling assert_cmd v2.1.1
-   Compiling ctrlc v3.5.1
-   Compiling serde_derive v1.0.228
-   Compiling clap_derive v4.5.49
+   Compiling either v1.15.0
+   Compiling float-cmp v0.10.0
    Compiling normalize-line-endings v0.3.0
    Compiling predicates v3.1.3
+   Compiling terminal_size v0.4.3
+   Compiling chrono v0.4.42
    Compiling predicates-tree v1.0.12
    Compiling bstr v1.12.1
    Compiling wait-timeout v0.2.1
+   Compiling ctrlc v3.5.1
+   Compiling roxmltree v0.21.1
+   Compiling rayon v1.11.0
    Compiling fastrand v2.3.0
+   Compiling minimal-lexical v0.2.1
+   Compiling nom v7.1.3
+   Compiling thiserror v1.0.69
    Compiling tempfile v3.23.0
-warning: fixdecoder@0.2.1: Building fixdecoder v0.2.1 (branch:develop, commit:02b044e) [rust:1.91.1]
+   Compiling clap_derive v4.5.49
+   Compiling serde_derive v1.0.228
+   Compiling thiserror-impl v1.0.69
+warning: fixdecoder@0.3.0: Building fixdecoder 0.3.0 (branch:develop, commit:9f467f8) [rust:1.91.1]
+   Compiling circular v0.3.0
+   Compiling arrayvec v0.7.6
+   Compiling etherparse v0.15.0
    Compiling clap v4.5.53
+   Compiling rusticata-macros v4.1.0
+   Compiling pcap-parser v0.14.1
+   Compiling pcap2fix v0.1.0 (/Users/sclarke/github/fixdecoder2/pcap2fix)
    Compiling quick-xml v0.36.2
-    Finished `test` profile [unoptimized + debuginfo] target(s) in 7.42s
-     Running unittests src/main.rs (target/llvm-cov-target/debug/deps/fixdecoder-835cbd2851e2e0ab)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 8.38s
+     Running unittests src/main.rs (target/llvm-cov-target/debug/deps/fixdecoder-ae50d2dc6f6148f6)
 
-running 72 tests
+running 75 tests
 test decoder::display::tests::layout_stats_produces_layout ... ok
 test decoder::display::tests::pad_ansi_extends_to_requested_width ... ok
-test decoder::display::tests::print_enum_outputs_coloured_enum ... ok
-test decoder::display::tests::collect_sorted_values_orders_by_enum ... ok
 test decoder::display::tests::collect_group_layout_counts_nested_components ... ok
 test decoder::display::tests::print_field_renders_required_indicator ... ok
-test decoder::display::tests::tag_and_message_cells_include_expected_text ... ok
 test decoder::display::tests::compute_values_layout_uses_max_entry ... ok
-test decoder::display::tests::compute_message_layout_counts_header_and_trailer ... ok
+test decoder::display::tests::print_enum_outputs_coloured_enum ... ok
+test decoder::display::tests::tag_and_message_cells_include_expected_text ... ok
+test decoder::display::tests::collect_sorted_values_orders_by_enum ... ok
 test decoder::display::tests::terminal_width_is_positive ... ok
+test decoder::display::tests::compute_message_layout_counts_header_and_trailer ... ok
 test decoder::display::tests::visible_len_ignores_escape_sequences ... ok
-test decoder::display::tests::print_enum_columns_respects_layout_columns ... ok
 test decoder::display::tests::visible_width_ignores_ansi_sequences ... ok
+test decoder::display::tests::print_enum_columns_respects_layout_columns ... ok
+test decoder::display::tests::write_with_padding_adds_spaces ... ok
 test decoder::display::tests::render_component_prints_matching_msg_type_enum_only ... ok
 test decoder::display::tests::render_message_includes_header_and_trailer ... ok
-test decoder::display::tests::write_with_padding_adds_spaces ... ok
 test decoder::display::tests::cached_layout_is_reused_for_component ... ok
-test decoder::prettifier::tests::read_line_with_follow_returns_zero_on_eof ... ok
 test decoder::prettifier::tests::trim_line_endings_strips_crlf ... ok
-test decoder::prettifier::tests::header_and_trailer_are_repositioned_when_out_of_place ... ok
+test decoder::prettifier::tests::read_line_with_follow_returns_zero_on_eof ... ok
 test decoder::schema::tests::parse_simple_vec ... ok
-test decoder::schema::tests::parse_message_with_components ... ok
 test decoder::schema::tests::parse_message_fields ... ok
+test decoder::schema::tests::parse_message_with_components ... ok
+test decoder::prettifier::tests::prettify_aligns_group_entries_without_header ... ok
+test decoder::prettifier::tests::header_and_trailer_are_repositioned_when_out_of_place ... ok
+test decoder::prettifier::tests::build_tag_order_respects_annotations_and_trailer ... ok
 test decoder::summary::tests::build_summary_row_includes_bn_headers ... ok
 test decoder::summary::tests::display_instrument_formats_side_and_symbol ... ok
 test decoder::summary::tests::date_diff_days_returns_none_when_incomplete ... ok
 test decoder::summary::tests::extract_date_part_handles_timestamp ... ok
 test decoder::summary::tests::flow_label_skips_leading_unknown ... ok
 test decoder::summary::tests::preferred_settlement_date_prefers_primary_then_secondary ... ok
-test decoder::summary::tests::links_orders_using_order_id_and_cl_ord_id ... ok
 test decoder::summary::tests::render_record_header_includes_id_and_instrument ... ok
 test decoder::summary::tests::resolve_key_prefers_alias_then_ids ... ok
 test decoder::summary::tests::state_path_deduplicates_consecutive_states ... ok
 test decoder::summary::tests::terminal_status_from_non_exec_report_updates_header ... ok
 test decoder::tag_lookup::tests::detects_schema_from_default_appl_ver_id ... ok
-test decoder::summary::tests::collects_states_for_single_order ... ok
-test decoder::prettifier::tests::prettify_orders_without_msg_type_header_first ... ok
-test decoder::prettifier::tests::build_tag_order_respects_annotations_and_trailer ... ok
-test decoder::prettifier::tests::prettify_includes_missing_tag_annotations_once ... ok
+test decoder::summary::tests::absorb_fields_sets_core_values ... ok
+test decoder::summary::tests::render_outputs_state_headline ... ok
+test decoder::summary::tests::bn_message_sets_state_and_spot_price ... ok
+test decoder::summary::tests::absorb_fields_sets_block_notice_specifics ... ok
 test decoder::validator::tests::allows_repeating_group_tags ... ok
 test decoder::validator::tests::detects_body_length_mismatch ... ok
 test decoder::validator::tests::detects_checksum_mismatch ... ok
 test decoder::validator::tests::missing_msg_type_still_reports_length_and_tag ... ok
 test fix::obfuscator::tests::reset_starts_aliases_over ... ok
-test tests::add_flag_args_sets_flags ... ok
 test tests::add_entity_arg_defaults_to_true_when_missing_value ... ok
+test tests::add_flag_args_sets_flags ... ok
+test tests::build_cli_parses_follow_and_summary_flags ... ok
 test tests::dictionary_key_includes_service_pack ... ok
+test tests::dictionary_marker_highlights_selected_entry ... ok
 test tests::dictionary_source_prefers_custom_entry ... ok
 test tests::final_exit_code_marks_interrupt ... ok
-test tests::build_cli_parses_follow_and_summary_flags ... ok
-test tests::normalise_fix_key_handles_variants ... ok
 test tests::invalid_fix_version_errors ... ok
-test tests::parse_colour_rejects_invalid ... ok
+test tests::normalise_fix_key_handles_variants ... ok
 test tests::parse_colour_recognises_yes_no ... ok
+test tests::parse_colour_rejects_invalid ... ok
+test decoder::summary::tests::links_orders_using_order_id_and_cl_ord_id ... ok
 test tests::parse_delimiter_accepts_hex ... ok
 test tests::parse_delimiter_accepts_literal ... ok
 test tests::parse_delimiter_rejects_empty ... ok
@@ -389,96 +418,118 @@ test tests::resolve_input_files_preserves_inputs ... ok
 test tests::valid_fix_version_passes ... ok
 test tests::version_str_is_cached ... ok
 test tests::version_string_matches_components ... ok
+test decoder::prettifier::tests::prettify_includes_missing_tag_annotations_once ... ok
+test decoder::prettifier::tests::prettify_orders_without_msg_type_header_first ... ok
+test decoder::summary::tests::collects_states_for_single_order ... ok
 test decoder::prettifier::tests::validation_inserts_missing_tags ... ok
 test decoder::prettifier::tests::validation_only_outputs_invalid_messages ... ok
 test decoder::prettifier::tests::validation_skips_valid_messages ... ok
-test decoder::summary::tests::absorb_fields_sets_block_notice_specifics ... ok
-test decoder::summary::tests::bn_message_sets_state_and_spot_price ... ok
-test decoder::summary::tests::render_outputs_state_headline ... ok
-test decoder::summary::tests::absorb_fields_sets_core_values ... ok
 test decoder::tag_lookup::tests::load_dictionary_respects_override_key ... ok
 test decoder::tag_lookup::tests::override_uses_fallback_dictionary_for_missing_tags ... ok
+test decoder::tag_lookup::tests::repeatable_tags_include_nested_groups ... ok
 test decoder::tag_lookup::tests::warns_and_falls_back_on_unknown_override ... ok
 
-test result: ok. 72 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.99s
+test result: ok. 75 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.00s
 
-     Running unittests src/bin/generate_sensitive_tags.rs (target/llvm-cov-target/debug/deps/generate_sensitive_tags-bcdddcbc14128afb)
+     Running unittests src/bin/generate_sensitive_tags.rs (target/llvm-cov-target/debug/deps/generate_sensitive_tags-79d8bd38aa9fdc5a)
 
 running 0 tests
 
 test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
-     Running tests/cli.rs (target/llvm-cov-target/debug/deps/cli-94133c405ce02098)
+     Running tests/cli.rs (target/llvm-cov-target/debug/deps/cli-762abd0244a0dac8)
 
 running 5 tests
-test decodes_message_from_file_path ... ok
 test summary_mode_outputs_order_summary ... ok
 test decodes_single_message_from_stdin ... ok
 test validation_reports_missing_fields ... ok
+test decodes_message_from_file_path ... ok
 test override_is_honoured_with_fallback ... ok
 
-test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.67s
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 3.24s
+
+     Running unittests src/main.rs (target/llvm-cov-target/debug/deps/pcap2fix-19171fc4d58700e9)
+
+running 6 tests
+test tests::out_of_order_future_segment_is_skipped ... ok
+test tests::flushes_full_messages_only ... ok
+test tests::flush_complete_messages_emits_and_retains_tail ... ok
+test tests::parse_delimiter_variants ... ok
+test tests::reassembly_appends_in_order ... ok
+test tests::retransmit_is_ignored ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
 
 
     Finished report saved to target/coverage/coverage.xml
    Compiling proc-macro2 v1.0.103
-   Compiling unicode-ident v1.0.22
    Compiling quote v1.0.42
+   Compiling unicode-ident v1.0.22
+   Compiling memchr v2.7.6
    Compiling libc v0.2.178
    Compiling crossbeam-utils v0.8.21
    Compiling bitflags v2.10.0
    Compiling objc2 v0.6.3
-   Compiling memchr v2.7.6
-   Compiling serde_core v1.0.228
-   Compiling objc2-encode v4.1.0
-   Compiling cfg_aliases v0.2.1
-   Compiling autocfg v1.5.0
    Compiling utf8parse v0.2.2
-   Compiling nix v0.30.1
+   Compiling colorchoice v1.0.4
+   Compiling cfg_aliases v0.2.1
+   Compiling is_terminal_polyfill v1.70.2
    Compiling anstyle-parse v0.2.7
+   Compiling serde_core v1.0.228
+   Compiling autocfg v1.5.0
+   Compiling objc2-encode v4.1.0
+   Compiling anstyle-query v1.1.5
+   Compiling anstyle v1.0.13
+   Compiling nix v0.30.1
+   Compiling anstream v0.6.21
    Compiling semver v1.0.27
    Compiling num-traits v0.2.19
-   Compiling is_terminal_polyfill v1.70.2
-   Compiling colorchoice v1.0.4
-   Compiling anstyle v1.0.13
-   Compiling serde v1.0.228
-   Compiling anstyle-query v1.1.5
-   Compiling rayon-core v1.13.0
+   Compiling clap_lex v0.7.6
    Compiling rustix v1.1.2
-   Compiling anstream v0.6.21
-   Compiling rustc_version v0.4.1
+   Compiling serde v1.0.228
+   Compiling anyhow v1.0.100
+   Compiling strsim v0.11.1
+   Compiling rayon-core v1.13.0
+   Compiling heck v0.5.0
+   Compiling clap_builder v4.5.53
+   Compiling block2 v0.6.2
    Compiling crossbeam-epoch v0.9.18
    Compiling crossbeam-deque v0.8.6
-   Compiling aho-corasick v1.1.4
-   Compiling core-foundation-sys v0.8.7
-   Compiling regex-syntax v0.8.8
-   Compiling clap_lex v0.7.6
-   Compiling block2 v0.6.2
-   Compiling strsim v0.11.1
-   Compiling anyhow v1.0.100
-   Compiling cfg-if v1.0.4
-   Compiling heck v0.5.0
+   Compiling rustc_version v0.4.1
    Compiling syn v2.0.111
-   Compiling regex-automata v0.4.13
-   Compiling clap_builder v4.5.53
+   Compiling aho-corasick v1.1.4
+   Compiling minimal-lexical v0.2.1
+   Compiling core-foundation-sys v0.8.7
+   Compiling cfg-if v1.0.4
+   Compiling regex-syntax v0.8.8
    Compiling errno v0.3.14
    Compiling dispatch2 v0.3.0
    Compiling iana-time-zone v0.1.64
-   Compiling fixdecoder v0.2.1 (/Users/sclarke/github/fixdecoder2)
+   Compiling nom v7.1.3
+   Compiling fixdecoder v0.3.0 (/Users/sclarke/github/fixdecoder2)
+   Compiling thiserror v1.0.69
    Compiling either v1.15.0
+   Compiling regex-automata v0.4.13
+   Compiling rusticata-macros v4.1.0
    Compiling rayon v1.11.0
-   Compiling chrono v0.4.42
-warning: fixdecoder@0.2.1: Building fixdecoder v0.2.1 (branch:develop, commit:02b044e) [rust:1.91.1]
    Compiling terminal_size v0.4.3
    Compiling ctrlc v3.5.1
    Compiling roxmltree v0.21.1
-   Compiling once_cell v1.21.3
-   Compiling regex v1.12.2
+   Compiling arrayvec v0.7.6
    Compiling serde_derive v1.0.228
    Compiling clap_derive v4.5.49
+   Compiling thiserror-impl v1.0.69
+   Compiling once_cell v1.21.3
+warning: fixdecoder@0.3.0: Building fixdecoder 0.3.0 (branch:develop, commit:9f467f8) [rust:1.91.1]
+   Compiling circular v0.3.0
+   Compiling chrono v0.4.42
+   Compiling pcap-parser v0.14.1
+   Compiling etherparse v0.15.0
+   Compiling regex v1.12.2
    Compiling clap v4.5.53
    Compiling quick-xml v0.36.2
-    Finished `release` profile [optimized] target(s) in 9.17s
+   Compiling pcap2fix v0.1.0 (/Users/sclarke/github/fixdecoder2/pcap2fix)
+    Finished `release` profile [optimized] target(s) in 10.03s
 ```
 
 Build the release version
