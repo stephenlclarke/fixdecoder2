@@ -7,6 +7,7 @@
 //! The module-level comment keeps the tone informal yet informative.
 
 use crate::decoder::colours::{ColourPalette, palette};
+use crate::decoder::layout::{NEST_INDENT, TAG_WIDTH};
 use crate::decoder::schema::{
     ComponentNode, Field, FieldNode, GroupNode, MessageNode, SchemaTree, Value,
 };
@@ -148,7 +149,7 @@ pub(crate) fn pad_ansi(text: &str, width: usize) -> String {
 /// Tiny helper that implements `Display` for indentation without building
 /// temporary `String`s.
 #[derive(Clone, Copy)]
-struct Indent(usize);
+pub(crate) struct Indent(usize);
 
 impl fmt::Display for Indent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -156,7 +157,7 @@ impl fmt::Display for Indent {
     }
 }
 
-fn indent(level: usize) -> Indent {
+pub(crate) fn indent(level: usize) -> Indent {
     Indent(level)
 }
 
@@ -274,6 +275,20 @@ mod tests {
         });
 
         let aux_field = sample_field_node(false);
+        let group_count_field = Arc::new(Field {
+            name: "Nested".into(),
+            number: 200,
+            field_type: "NUMINGROUP".into(),
+            values: Vec::new(),
+            values_wrapper: ValuesWrapper::default(),
+        });
+        let allocs_count_field = Arc::new(Field {
+            name: "Allocs".into(),
+            number: 201,
+            field_type: "NUMINGROUP".into(),
+            values: Vec::new(),
+            values_wrapper: ValuesWrapper::default(),
+        });
         let group_field = sample_field_node(true);
 
         let component = ComponentNode {
@@ -330,6 +345,8 @@ mod tests {
         let mut fields = BTreeMap::new();
         fields.insert(msg_type_field.name.clone(), msg_type_field.clone());
         fields.insert(aux_field.field.name.clone(), aux_field.field.clone());
+        fields.insert(group_count_field.name.clone(), group_count_field.clone());
+        fields.insert(allocs_count_field.name.clone(), allocs_count_field.clone());
 
         let mut components = BTreeMap::new();
         components.insert(header.name.clone(), header);
@@ -410,8 +427,8 @@ mod tests {
         assert!(s.contains("Header"));
         assert!(s.contains("Message: "));
         assert!(s.contains("Body"));
-        assert!(s.contains("Group:"));
         assert!(s.contains("Allocs"));
+        assert!(s.contains("201")); // group count tag number
         assert!(s.contains("Trailer"));
     }
 
@@ -513,7 +530,7 @@ fn print_field(
 ) -> io::Result<()> {
     writeln!(
         out,
-        "{}{}{:4}{}: {}{}{} ({}{}{}){}",
+        "{}{}{:width$}{}: {}{}{} ({}{}{}){}",
         indent(indent_level),
         colours.tag,
         field.field.number,
@@ -524,7 +541,8 @@ fn print_field(
         colours.value,
         field.field.field_type,
         colours.reset,
-        format_required(field.required, colours)
+        format_required(field.required, colours),
+        width = TAG_WIDTH
     )
 }
 
@@ -829,12 +847,17 @@ impl<'a, 'b, W: Write> RenderContext<'a, 'b, W> {
             colours.reset
         )?;
 
-        self.print_field_collection(&msg.fields, indent_level, shared_style)?;
+        self.print_field_collection(&msg.fields, indent_level + 2, shared_style)?;
         for component in &msg.components {
-            self.render_component_with_style(Some(msg), component, indent_level, shared_style)?;
+            self.render_component_with_style(
+                Some(msg),
+                component,
+                indent_level + NEST_INDENT,
+                shared_style,
+            )?;
         }
         for group in &msg.groups {
-            self.render_group_with_style(group, indent_level, shared_style)?;
+            self.render_group_with_style(group, indent_level + NEST_INDENT, shared_style)?;
         }
 
         if include_trailer && let Some(trailer) = self.schema.components.get("Trailer") {
@@ -877,18 +900,18 @@ impl<'a, 'b, W: Write> RenderContext<'a, 'b, W> {
         )?;
 
         for field in &component.fields {
-            print_field(self.out, field, indent_level + 4, colours)?;
+            print_field(self.out, field, indent_level + NEST_INDENT, colours)?;
             if self.verbose {
-                self.print_enums_for_field(field, msg, indent_level + 6, style)?;
+                self.print_enums_for_field(field, msg, indent_level + NEST_INDENT + 2, style)?;
             }
         }
 
         for sub in &component.components {
-            self.render_component_with_style(msg, sub, indent_level + 4, style)?;
+            self.render_component_with_style(msg, sub, indent_level + NEST_INDENT, style)?;
         }
 
         for group in &component.groups {
-            self.render_group_with_style(group, indent_level + 4, style)?;
+            self.render_group_with_style(group, indent_level + NEST_INDENT, style)?;
         }
         Ok(())
     }
@@ -911,24 +934,32 @@ impl<'a, 'b, W: Write> RenderContext<'a, 'b, W> {
             style
         };
         let colours = style.colours();
-        writeln!(
-            self.out,
-            "{}Group: {}{}{}{}",
-            indent(indent_level),
-            colours.name,
-            group.name,
-            colours.reset,
-            format_required(group.required, colours)
-        )?;
+        if let Some(count_field) = self.schema.fields.get(&group.name) {
+            let count_node = FieldNode {
+                required: group.required,
+                field: count_field.clone(),
+            };
+            print_field(self.out, &count_node, indent_level, colours)?;
+        } else {
+            writeln!(
+                self.out,
+                "{}Group: {}{}{}{}",
+                indent(indent_level),
+                colours.name,
+                group.name,
+                colours.reset,
+                format_required(group.required, colours)
+            )?;
+        }
 
-        self.print_field_collection(&group.fields, indent_level + 4, style)?;
+        self.print_field_collection(&group.fields, indent_level + NEST_INDENT, style)?;
 
         for component in &group.components {
-            self.render_component_with_style(None, component, indent_level + 4, style)?;
+            self.render_component_with_style(None, component, indent_level + NEST_INDENT, style)?;
         }
 
         for sub_group in &group.groups {
-            self.render_group_with_style(sub_group, indent_level + 4, style)?;
+            self.render_group_with_style(sub_group, indent_level + NEST_INDENT, style)?;
         }
         Ok(())
     }
@@ -1265,22 +1296,22 @@ fn collect_component_layout(
     indent_level: usize,
     stats: &mut LayoutStats,
 ) {
-    collect_fields_layout(&component.fields, indent_level + 6, stats);
+    collect_fields_layout(&component.fields, indent_level + NEST_INDENT + 2, stats);
     for sub in &component.components {
-        collect_component_layout(sub, indent_level + 4, stats);
+        collect_component_layout(sub, indent_level + NEST_INDENT, stats);
     }
     for group in &component.groups {
-        collect_group_layout(group, indent_level + 4, stats);
+        collect_group_layout(group, indent_level + NEST_INDENT, stats);
     }
 }
 
 fn collect_group_layout(group: &GroupNode, indent_level: usize, stats: &mut LayoutStats) {
-    collect_fields_layout(&group.fields, indent_level + 6, stats);
+    collect_fields_layout(&group.fields, indent_level + NEST_INDENT + 2, stats);
     for component in &group.components {
-        collect_component_layout(component, indent_level + 4, stats);
+        collect_component_layout(component, indent_level + NEST_INDENT, stats);
     }
     for sub in &group.groups {
-        collect_group_layout(sub, indent_level + 4, stats);
+        collect_group_layout(sub, indent_level + NEST_INDENT, stats);
     }
 }
 

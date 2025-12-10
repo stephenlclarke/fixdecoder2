@@ -1,6 +1,6 @@
 [package]
 name = "fixdecoder"
-version = "0.2.1"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -23,3 +23,7 @@ tempfile = "3.10"
 
 [build-dependencies]
 rustc_version = "0.4"
+
+[workspace]
+members = [".", "pcap2fix"]
+resolver = "2"

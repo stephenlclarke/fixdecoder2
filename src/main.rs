@@ -756,15 +756,16 @@ fn dictionary_source(custom_dicts: &HashMap<String, CustomDictionary>, key: &str
 /// Print the table header for dictionary listings.
 fn print_dictionary_header() {
     println!(
-        "  {:<10} {:>12} {:>8} {:>11} {:>11} Source",
-        "Version", "ServicePack", "Fields", "Components", "Messages",
+        "  {:<1}{:<10} {:>12} {:>8} {:>11} {:>11} Source",
+        "", "Version", "ServicePack", "Fields", "Components", "Messages",
     );
 }
 
 /// Print one row of dictionary metadata.
-fn print_dictionary_row(key: &str, schema: &SchemaTree, source: &str) {
+fn print_dictionary_row(marker: &str, key: &str, schema: &SchemaTree, source: &str) {
     println!(
-        "  {:<10} {:>12} {:>8} {:>11} {:>11} {}",
+        "  {:<1}{:<10} {:>12} {:>8} {:>11} {:>11} {}",
+        marker,
         key,
         schema.service_pack,
         schema.fields.len(),
@@ -772,6 +773,15 @@ fn print_dictionary_row(key: &str, schema: &SchemaTree, source: &str) {
         schema.messages.len(),
         source
     );
+}
+
+/// Prefix a row when the FIX key should be highlighted.
+fn dictionary_marker(highlight: Option<&str>, key: &str) -> &'static str {
+    if matches!(highlight, Some(target) if target.eq_ignore_ascii_case(key)) {
+        "*"
+    } else {
+        " "
+    }
 }
 
 /// Determine whether a particular FIX dictionary needs the FIXT11 session
@@ -826,8 +836,12 @@ fn key_to_xml_id(key: &str) -> Option<&'static str> {
     }
 }
 
-/// Print a summary table of all available dictionaries (built-in and custom).
-fn print_all_dictionary_info(custom_dicts: &HashMap<String, CustomDictionary>) -> Result<()> {
+/// Print a summary table of all available dictionaries (built-in and custom),
+/// optionally highlighting a selected entry.
+fn print_all_dictionary_info(
+    custom_dicts: &HashMap<String, CustomDictionary>,
+    highlight: Option<&str>,
+) -> Result<()> {
     println!(
         "Available FIX Dictionaries: {}",
         available_fix_versions(custom_dicts)
@@ -839,7 +853,8 @@ fn print_all_dictionary_info(custom_dicts: &HashMap<String, CustomDictionary>) -
         match load_schema_for_key(&key, custom_dicts) {
             Ok(schema) => {
                 let source = dictionary_source(custom_dicts, &key);
-                print_dictionary_row(&key, &schema, &source);
+                let marker = dictionary_marker(highlight, &key);
+                print_dictionary_row(marker, &key, &schema, &source);
             }
             Err(err) => eprintln!("warning: failed to load {key}: {err}"),
         }
@@ -848,26 +863,14 @@ fn print_all_dictionary_info(custom_dicts: &HashMap<String, CustomDictionary>) -
     Ok(())
 }
 
-/// Handle the `--info` command, printing either all dictionaries or the selected one.
+/// Handle the `--info` command, printing all dictionaries and highlighting the selected one.
 fn handle_info(
     opts: &CliOptions,
-    schema: &SchemaTree,
+    _schema: &SchemaTree,
     custom_dicts: &HashMap<String, CustomDictionary>,
 ) -> Result<()> {
-    if opts.fix_from_user {
-        println!(
-            "Available FIX Dictionaries: {}",
-            available_fix_versions(custom_dicts)
-        );
-        println!("\nCurrent Schema:");
-        print_dictionary_header();
-        let key = normalise_fix_key(&opts.fix_version).unwrap_or_else(|| "FIX44".to_string());
-        let source = dictionary_source(custom_dicts, &key);
-        print_dictionary_row(&key, schema, &source);
-        println!();
-    } else {
-        print_all_dictionary_info(custom_dicts)?;
-    }
+    let selected_key = normalise_fix_key(&opts.fix_version).unwrap_or_else(|| "FIX44".to_string());
+    print_all_dictionary_info(custom_dicts, Some(&selected_key))?;
     Ok(())
 }
 
@@ -1160,5 +1163,12 @@ mod tests {
         let all = all_dictionary_keys(&custom);
         assert!(all.contains(&"FIX44".into()));
         assert!(all.contains(&"FIX27".into()));
+    }
+
+    #[test]
+    fn dictionary_marker_highlights_selected_entry() {
+        assert_eq!(dictionary_marker(Some("fix44"), "FIX44"), "*");
+        assert_eq!(dictionary_marker(Some("fix44"), "FIX50"), " ");
+        assert_eq!(dictionary_marker(None, "FIX44"), " ");
     }
 }

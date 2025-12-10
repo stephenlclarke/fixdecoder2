@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-delay=10   # default sleep delay
+delay=1s   # default sleep delay
 
 # Parse options
 while getopts "d:" opt; do

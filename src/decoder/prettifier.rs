@@ -2,12 +2,16 @@
 // SPDX-FileCopyrightText: 2025 Steve Clarke <stephenlclarke@mac.com> - https://xyzzy.tools
 
 use crate::decoder::colours::{disable_colours, palette};
-use crate::decoder::display::{pad_ansi, terminal_width, visible_width};
+use crate::decoder::display::{indent, pad_ansi, terminal_width, visible_width};
 use crate::decoder::fixparser::{FieldValue, parse_fix};
+use crate::decoder::layout::{BASE_INDENT, ENTRY_FIELD_INDENT, NAME_TEXT_OFFSET};
 use crate::decoder::summary::OrderSummary;
 #[cfg(test)]
 use crate::decoder::tag_lookup::MessageDef;
-use crate::decoder::tag_lookup::{FixTagLookup, load_dictionary_with_override};
+use crate::decoder::tag_lookup::{
+    FixTagLookup, GroupSpec as MessageDefGroupSpec, MessageDef as LookupMessageDef,
+    load_dictionary_with_override,
+};
 use crate::decoder::validator;
 use crate::fix;
 use once_cell::sync::Lazy;
@@ -65,33 +69,194 @@ pub fn prettify_with_report(
     let fields = parse_fix(msg);
     let annotations = report.map(|r| &r.tag_errors);
 
-    let mut tag_buckets = bucket_fields(&fields);
-    let ordered_tags = build_tag_order(&fields, dict, annotations);
+    let mut seen_tags = HashSet::new();
+    let msg_def = fields
+        .iter()
+        .find(|f| f.tag == 35)
+        .and_then(|f| dict.message_def(&f.value));
+    let renderer = msg_def.map(|def| GroupRenderer {
+        dict,
+        annotations,
+        colours: &colours,
+        msg_def: def,
+        fields: &fields,
+    });
 
-    for tag in ordered_tags {
-        if let Some(bucket) = tag_buckets.get_mut(&tag) {
-            while let Some(field) = bucket.pop_front() {
-                write_field_line(&mut output, dict, field, annotations, &colours);
-            }
-        } else if let Some(errs) = annotations
-            .and_then(|ann| ann.get(&tag))
-            .filter(|errs| !errs.is_empty())
+    let mut idx = 0;
+    while idx < fields.len() {
+        let field = &fields[idx];
+        seen_tags.insert(field.tag);
+        if let Some(render) = renderer.as_ref()
+            && let Some(spec) = render.msg_def.groups.get(&field.tag)
         {
-            write_missing_line(&mut output, dict, tag, errs, &colours);
+            let consumed = render.render_group(&mut output, idx, spec, BASE_INDENT);
+            idx += consumed.max(1);
+        } else {
+            write_field_line(&mut output, dict, field, annotations, &colours, BASE_INDENT);
+            idx += 1;
         }
     }
 
-    // Emit any remaining fields that were not covered by ordered_tags.
-    for bucket in tag_buckets.values_mut() {
-        while let Some(field) = bucket.pop_front() {
-            write_field_line(&mut output, dict, field, annotations, &colours);
+    if let Some(ann) = annotations {
+        for (tag, errs) in ann {
+            if seen_tags.contains(tag) || errs.is_empty() {
+                continue;
+            }
+            write_missing_line(&mut output, dict, *tag, errs, &colours);
         }
     }
 
     output
 }
 
+struct GroupRenderer<'a> {
+    dict: &'a FixTagLookup,
+    annotations: Option<&'a std::collections::HashMap<u32, Vec<String>>>,
+    colours: &'a crate::decoder::colours::ColourPalette,
+    msg_def: &'a LookupMessageDef,
+    fields: &'a [FieldValue],
+}
+
+impl<'a> GroupRenderer<'a> {
+    fn write_field(&self, output: &mut String, field: &FieldValue, indent_spaces: usize) {
+        write_field_line(
+            output,
+            self.dict,
+            field,
+            self.annotations,
+            self.colours,
+            indent_spaces,
+        );
+    }
+
+    fn render_group(
+        &self,
+        output: &mut String,
+        start_idx: usize,
+        spec: &MessageDefGroupSpec,
+        indent_spaces: usize,
+    ) -> usize {
+        let mut consumed = 0usize;
+        let mut entries = 0usize;
+        let expected = self.fields[start_idx]
+            .value
+            .parse::<usize>()
+            .unwrap_or_default();
+        self.write_field(output, &self.fields[start_idx], indent_spaces);
+        let mut idx = start_idx + 1;
+        while idx < self.fields.len() && entries < expected {
+            if self.fields[idx].tag != spec.delim {
+                if self.msg_def.group_membership.get(&self.fields[idx].tag) == Some(&spec.count_tag)
+                {
+                    if entries == 0 {
+                        let entry_consumed =
+                            self.render_group_entry(output, idx, spec, indent_spaces, entries + 1);
+                        idx += entry_consumed;
+                        entries += 1;
+                        consumed = idx - start_idx;
+                        continue;
+                    }
+                    self.write_field(
+                        output,
+                        &self.fields[idx],
+                        indent_spaces + ENTRY_FIELD_INDENT,
+                    );
+                    idx += 1;
+                    consumed = idx - start_idx;
+                    continue;
+                }
+                break;
+            }
+            let entry_consumed =
+                self.render_group_entry(output, idx, spec, indent_spaces, entries + 1);
+            idx += entry_consumed;
+            entries += 1;
+            consumed = idx - start_idx;
+        }
+
+        if entries != expected {
+            if let Some(errs) = self
+                .annotations
+                .and_then(|ann| ann.get(&spec.count_tag))
+                .filter(|errs| !errs.is_empty())
+            {
+                write_missing_line(output, self.dict, spec.count_tag, errs, self.colours);
+            } else {
+                output.push_str(&format!(
+                    "{}{}Warning:{} NumInGroup {} ({}) declared {}, found {}\n",
+                    indent(indent_spaces + 2),
+                    self.colours.error,
+                    self.colours.reset,
+                    spec.count_tag,
+                    spec.name,
+                    expected,
+                    entries
+                ));
+            }
+        }
+        consumed
+    }
+
+    fn render_group_entry(
+        &self,
+        output: &mut String,
+        start_idx: usize,
+        spec: &MessageDefGroupSpec,
+        indent_spaces: usize,
+        entry_idx: usize,
+    ) -> usize {
+        let entry_label = format!("Group {}", entry_idx);
+        let dash_count = 60usize.saturating_sub(entry_label.len());
+        let dashes = "-".repeat(dash_count);
+        let dash_start_col = indent_spaces + NAME_TEXT_OFFSET;
+        let label_indent = dash_start_col.saturating_sub(entry_label.len());
+        output.push_str(&format!(
+            "{}{} {}{}{}\n",
+            indent(label_indent),
+            entry_label,
+            self.colours.error,
+            dashes,
+            self.colours.reset
+        ));
+        let mut idx = start_idx;
+        let mut last_pos = -1isize;
+        while idx < self.fields.len() {
+            let tag = self.fields[idx].tag;
+            if tag == spec.delim && idx != start_idx {
+                break;
+            }
+            if let Some(nested) = spec.nested.get(&tag) {
+                let nested_consumed =
+                    self.render_group(output, idx, nested, indent_spaces + ENTRY_FIELD_INDENT);
+                idx += nested_consumed.max(1);
+                continue;
+            }
+            if let Some(pos) = spec.entry_pos.get(&tag).copied() {
+                if (pos as isize) < last_pos
+                    && let Some(errs) = self
+                        .annotations
+                        .and_then(|ann| ann.get(&tag))
+                        .filter(|errs| !errs.is_empty())
+                {
+                    write_missing_line(output, self.dict, tag, errs, self.colours);
+                }
+                last_pos = pos as isize;
+                self.write_field(
+                    output,
+                    &self.fields[idx],
+                    indent_spaces + ENTRY_FIELD_INDENT,
+                );
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+        idx - start_idx
+    }
+}
+
 /// Bucket each field by tag so repeat occurrences can be emitted in order.
+#[allow(dead_code)]
 fn bucket_fields(
     fields: &[FieldValue],
 ) -> std::collections::HashMap<u32, std::collections::VecDeque<&FieldValue>> {
@@ -106,6 +271,7 @@ fn bucket_fields(
 /// Build the emission order of tags using the message definition when known, falling back
 /// to a header-first order when MsgType is absent, and appending tags referenced in
 /// validation annotations.
+#[allow(dead_code)]
 fn build_tag_order(
     fields: &[FieldValue],
     dict: &FixTagLookup,
@@ -144,10 +310,12 @@ fn build_tag_order(
     final_order
 }
 
+#[allow(dead_code)]
 fn canonical_header_tags() -> &'static [u32; 7] {
     &[8u32, 9, 35, 49, 56, 34, 52]
 }
 
+#[allow(dead_code)]
 fn trailer_tags(dict: &FixTagLookup) -> Vec<u32> {
     let order = dict.trailer_tags();
     if order.is_empty() {
@@ -157,6 +325,7 @@ fn trailer_tags(dict: &FixTagLookup) -> Vec<u32> {
     }
 }
 
+#[allow(dead_code)]
 fn collect_trailer_tags(fields: &[FieldValue], trailer_set: &HashSet<u32>) -> HashSet<u32> {
     fields
         .iter()
@@ -173,6 +342,7 @@ fn message_field_order(fields: &[FieldValue], dict: &FixTagLookup) -> Option<Vec
         .map(|def| def.field_order)
 }
 
+#[allow(dead_code)]
 fn fallback_field_order(fields: &[FieldValue]) -> Vec<u32> {
     let mut base = vec![8, 9, 35];
     for f in fields {
@@ -183,11 +353,13 @@ fn fallback_field_order(fields: &[FieldValue]) -> Vec<u32> {
     base
 }
 
+#[allow(dead_code)]
 fn dedup_order(order: Vec<u32>) -> Vec<u32> {
     let mut seen = HashSet::new();
     order.into_iter().filter(|tag| seen.insert(*tag)).collect()
 }
 
+#[allow(dead_code)]
 fn base_message_order(
     fields: &[FieldValue],
     dict: &FixTagLookup,
@@ -207,6 +379,7 @@ fn base_message_order(
     deduped
 }
 
+#[allow(dead_code)]
 fn append_annotation_tags(
     final_order: &mut Vec<u32>,
     annotations: &std::collections::HashMap<u32, Vec<String>>,
@@ -228,6 +401,7 @@ fn append_annotation_tags(
     }
 }
 
+#[allow(dead_code)]
 fn append_message_fields(
     fields: &[FieldValue],
     final_order: &mut Vec<u32>,
@@ -246,6 +420,7 @@ fn append_message_fields(
     }
 }
 
+#[allow(dead_code)]
 fn append_trailer_tags(
     final_order: &mut Vec<u32>,
     trailer_order: &[u32],
@@ -329,6 +504,7 @@ fn write_field_line(
     field: &crate::decoder::fixparser::FieldValue,
     annotations: Option<&std::collections::HashMap<u32, Vec<String>>>,
     colours: &crate::decoder::colours::ColourPalette,
+    indent_spaces: usize,
 ) {
     let tag_errors: Option<&Vec<String>> = annotations.and_then(|ann| ann.get(&field.tag));
     let tag_colour = if tag_errors.is_some() {
@@ -346,7 +522,8 @@ fn write_field_line(
     let name_section = format!("{}({}){}", colours.name, name_coloured, colours.reset);
     let desc = dict.enum_description(field.tag, &field.value);
     output.push_str(&format!(
-        "    {}{:4}{} {}: {}{}{}",
+        "{}{}{:4}{} {}: {}{}{}",
+        indent(indent_spaces),
         tag_colour,
         field.tag,
         colours.reset,
@@ -386,7 +563,8 @@ fn write_missing_line(
         errors.join(", ")
     };
     output.push_str(&format!(
-        "    {}{:4}{} ({}{}{}): {}{}{}\n",
+        "{}{}{:4}{} ({}{}{}): {}{}{}\n",
+        indent(BASE_INDENT),
         colours.error,
         tag,
         colours.reset,
@@ -797,6 +975,8 @@ fn test_lookup_with_order(field_order: Vec<u32>) -> FixTagLookup {
             _msg_type: "X".to_string(),
             field_order,
             required: Vec::new(),
+            groups: HashMap::new(),
+            group_membership: HashMap::new(),
         },
     );
     FixTagLookup::new_for_tests(messages)
@@ -805,6 +985,7 @@ fn test_lookup_with_order(field_order: Vec<u32>) -> FixTagLookup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decoder::schema::FixDictionary;
     use crate::decoder::tag_lookup::load_dictionary;
     use crate::decoder::validator;
     use crate::fix;
@@ -815,6 +996,74 @@ mod tests {
     const SOH: char = '\u{0001}';
     static TEST_GUARD: once_cell::sync::Lazy<Mutex<()>> =
         once_cell::sync::Lazy::new(|| Mutex::new(()));
+
+    fn small_group_lookup() -> FixTagLookup {
+        let xml = r#"
+<fix type='FIX' major='4' minor='4'>
+  <header>
+    <field name='BeginString' required='Y'/>
+    <field name='BodyLength' required='Y'/>
+    <field name='MsgType' required='Y'/>
+  </header>
+  <trailer>
+    <field name='CheckSum' required='Y'/>
+  </trailer>
+  <messages>
+    <message name='MDSnapshot' msgtype='W' msgcat='app'>
+      <field name='MsgType' required='Y'/>
+      <group name='NoMDEntries'>
+        <field name='MDEntryType' required='Y'/>
+        <field name='MDEntryPx'/>
+      </group>
+    </message>
+  </messages>
+  <components/>
+  <fields>
+    <field number='8' name='BeginString' type='STRING'/>
+    <field number='9' name='BodyLength' type='LENGTH'/>
+    <field number='10' name='CheckSum' type='STRING'/>
+    <field number='35' name='MsgType' type='STRING'>
+      <value enum='W' description='MDSnapshot'/>
+    </field>
+    <field number='268' name='NoMDEntries' type='NUMINGROUP'/>
+    <field number='269' name='MDEntryType' type='CHAR'/>
+    <field number='270' name='MDEntryPx' type='PRICE'/>
+  </fields>
+</fix>
+"#;
+        let dict = FixDictionary::from_xml(xml).expect("tiny dictionary parses");
+        FixTagLookup::from_dictionary(&dict, "TEST")
+    }
+
+    #[test]
+    fn prettify_aligns_group_entries_without_header() {
+        let _lock = TEST_GUARD.lock().unwrap();
+        disable_output_colours();
+        let dict = small_group_lookup();
+        let msg = format!(
+            "8=FIX.4.4{SOH}35=W{SOH}268=2{SOH}269=0{SOH}270=12.34{SOH}269=1{SOH}270=56.78{SOH}10=000{SOH}"
+        );
+        let rendered = prettify_with_report(&msg, &dict, None);
+        assert!(
+            !rendered.contains("Group: NoMDEntries"),
+            "group header line should be omitted: {rendered}"
+        );
+        let count_line = rendered
+            .lines()
+            .find(|l| l.contains("NoMDEntries"))
+            .expect("count tag line present");
+        let group_line = rendered
+            .lines()
+            .find(|l| l.contains("Group 1"))
+            .expect("group entry label present");
+        let paren_col = count_line.find('(').expect("open paren present");
+        let dash_col = group_line.find('-').expect("dashes present");
+        assert_eq!(
+            dash_col,
+            paren_col + 1,
+            "group separator should start one space after '(' anchor"
+        );
+    }
 
     #[test]
     fn validation_only_outputs_invalid_messages() {
@@ -989,6 +1238,8 @@ mod tests {
                 _msg_type: "X".to_string(),
                 field_order: vec![8, 9, 35, 55],
                 required: Vec::new(),
+                groups: HashMap::new(),
+                group_membership: HashMap::new(),
             },
         );
         let dict = FixTagLookup::new_for_tests(messages);
