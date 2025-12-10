@@ -70,17 +70,17 @@ You can run fixdecoder anywhere you can run a Rust binary — no extra OS depend
 - Output/layout: `--column`, `--verbose`, `--header`, `--trailer`, `--colour`, `--delimiter`
 - Processing modes: `--follow`, `--validate`, `--secret`, `--summary`
 
-## `--xml`
+### `--xml`
 
 The `--xml` flag lets you load custom FIX dictionaries from XML files; you can pass it multiple times to register several custom dictionaries. Each file is parsed, normalised to a canonical key (e.g., FIX44, FIX50SP2), and has FIXT11 session header/trailer injected for 5.0+ if missing. Custom entries are registered for tag lookup and schema loading; they override built-ins for the same key and replace earlier `--xml` files for that key, with warnings emitted in both cases.
 
 The XML dictionaries can be downloaded from the [QuickFIX GitHub Repo](https://github.com/quickfix/quickfix/tree/master/spec)
 
-## `--fix`
+### `--fix`
 
 The `--fix` option allows you to specify the default FIX dictionary. This defaults to FIX 4.4 (`44`). It accepts either just the version digits (e.g., `44`, `4.4`) or the same value prefixed with FIX/fix (e.g., `FIX44`, `fix4.4`). The parser normalises your input by stripping dots, uppercasing, and adding FIX if it’s missing; it then checks that key against built‑ins (`FIX27`…`FIXT11`) and any custom `--xml` overrides. If the normalised key isn’t known, it errors.
 
-## `--info`
+### `--info`
 
 `--info` is an informational mode: it prints the list of available FIX dictionary keys (built-ins plus any loaded via `--xml`), then a table of loaded dictionaries with counts and their source (built-in vs file path). The table highlights the currently selected/default FIX version (from `--fix` or the default `44`) with a leading `*` so you can see which dictionary will be used. It does not decode messages or print schema details; it’s meant to verify which dictionaries are present, which ones are being overridden by custom XML, and which version is active.
 
@@ -126,19 +126,19 @@ Accepted values:
 
 Empty values or anything longer than one character are rejected.
 
-## `-f`, `--follow`
+### `-f`, `--follow`
 
 Stream input like `tail -f`. Keeps reading and decoding as new data arrives on stdin or a file, sleeping briefly on `EOF` rather than exiting, until interrupted. This mirrors `tail -f` behaviour but with FIX decoding, validation, and prettification applied in real time.
 
-## `--summary`
+### `--summary`
 
 Track FIX order lifecycles and emit a summary instead of full decoded messages. When enabled, each message is consumed into an order tracker (keyed by `OrderID`/`ClOrdID`/`OrigClOrdID`), updating state, quantities, prices, and events. At the end (or live in `--follow` mode) it prints a concise per-order summary/footer using the chosen display delimiter. This mode suppresses the usual prettified message output; use it to monitor order state across a stream or log.
 
-## Download it
+# Download it
 
 Check out the Repo's [Releases Page](https://github.com/stephenlclarke/fixdecoder2/releases) to see what versions are available for the computer you want to run it on.
 
-## Build it
+# Build it
 
 Build it from source. This now requires `bash` version 5+ and a recent `Rust` toolchain (the project is tested with Rust 1.91+).
 
